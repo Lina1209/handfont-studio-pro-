@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { METRICS } from '../lib/project.js';
+import { METRICS, applyEraserToStrokes } from '../lib/project.js';
 
 const VIEW = { xMin: -60, xMax: 940, yMin: -260, yMax: 840 };
 const VIEW_H = VIEW.yMax - VIEW.yMin;
 
-export default function GlyphCanvas({ glyph, penWidth, showGuides, onCommit }) {
+export default function GlyphCanvas({ glyph, penWidth, penColor, eraserSize, toolMode, showGuides, onCommit }) {
   const canvasRef = useRef(null);
   const activeStroke = useRef(null);
   const [redraw, setRedraw] = useState(0);
@@ -39,46 +39,57 @@ export default function GlyphCanvas({ glyph, penWidth, showGuides, onCommit }) {
         ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.fillText(label, 8, Y(y) - 4);
       }
     }
+
     const paint = stroke => {
-      const pts = stroke?.points || [];
-      if (!pts.length) return;
-      ctx.strokeStyle = '#f2eee7'; ctx.fillStyle = '#f2eee7';
-      ctx.lineWidth = Math.max(1, (stroke.width || 70) * scale);
+      const points = stroke?.points || [];
+      if (!points.length) return;
+      const color = stroke.tool === 'eraser' ? '#111318' : (stroke.color || penColor || '#f2eee7');
+      ctx.strokeStyle = color; ctx.fillStyle = color;
+      ctx.lineWidth = Math.max(1, (stroke.width || (stroke.tool === 'eraser' ? eraserSize : penWidth) || 70) * scale);
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      if (pts.length === 1) {
-        ctx.beginPath(); ctx.arc(X(pts[0].x), Y(pts[0].y), ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill();
+      if (points.length === 1) {
+        ctx.beginPath(); ctx.arc(X(points[0].x), Y(points[0].y), ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill();
       } else {
-        ctx.beginPath(); ctx.moveTo(X(pts[0].x), Y(pts[0].y));
-        for (const point of pts.slice(1)) ctx.lineTo(X(point.x), Y(point.y));
+        ctx.beginPath(); ctx.moveTo(X(points[0].x), Y(points[0].y));
+        for (const point of points.slice(1)) ctx.lineTo(X(point.x), Y(point.y));
         ctx.stroke();
       }
     };
+
     (glyph.strokes || []).forEach(paint);
     if (activeStroke.current) paint(activeStroke.current);
-  }, [glyph, showGuides, redraw]);
+  }, [glyph, penColor, penWidth, eraserSize, showGuides, redraw]);
 
   const pointFrom = event => {
     const rect = canvasRef.current.getBoundingClientRect();
     const scale = rect.height / VIEW_H;
     return { x: (event.clientX - rect.left) / scale + VIEW.xMin, y: VIEW.yMax - (event.clientY - rect.top) / scale };
   };
+
   const down = event => {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    activeStroke.current = { width: penWidth, points: [pointFrom(event)] };
+    activeStroke.current = toolMode === 'eraser'
+      ? { tool: 'eraser', width: eraserSize, points: [pointFrom(event)] }
+      : { tool: 'pen', width: penWidth, color: penColor, points: [pointFrom(event)] };
     setRedraw(value => value + 1);
   };
+
   const move = event => {
     if (!activeStroke.current) return;
     const point = pointFrom(event), points = activeStroke.current.points, last = points[points.length - 1];
     if (Math.hypot(point.x - last.x, point.y - last.y) > 2) points.push(point);
     setRedraw(value => value + 1);
   };
+
   const finish = () => {
     if (!activeStroke.current) return;
     const stroke = activeStroke.current;
     activeStroke.current = null;
-    onCommit([...(glyph.strokes || []), stroke]);
+    const nextStrokes = stroke.tool === 'eraser'
+      ? applyEraserToStrokes(glyph.strokes || [], stroke)
+      : [...(glyph.strokes || []), stroke];
+    onCommit(nextStrokes);
     setRedraw(value => value + 1);
   };
 
