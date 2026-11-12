@@ -9,6 +9,7 @@ export default function App() {
   const [group, setGroup] = useState('cyrillic');
   const [activeCode, setActiveCode] = useState('А'.codePointAt(0));
   const [toolMode, setToolMode] = useState('pen');
+  const [eraserMode, setEraserMode] = useState('hard');
   const [penWidth, setPenWidth] = useState(72);
   const [eraserSize, setEraserSize] = useState(54);
   const [penColor, setPenColor] = useState('#f2eee7');
@@ -70,6 +71,12 @@ export default function App() {
       return { ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...current, strokes } } };
     });
     setMessage('Последнее действие отменено.');
+  };
+
+  const eraseLastStroke = () => {
+    if (!glyph.strokes?.length) return;
+    commitStrokes(glyph.strokes.slice(0, -1));
+    setMessage('Последний штрих удалён.');
   };
 
   const exportFont = () => {
@@ -153,17 +160,25 @@ export default function App() {
             <div><small>РЕДАКТОР</small><h1>Символ <span>{charOf(activeCode) === ' ' ? 'Пробел' : charOf(activeCode)}</span></h1></div>
             <label className="guide-toggle"><input type="checkbox" checked={showGuides} onChange={event => setShowGuides(event.target.checked)} /> Направляющие</label>
           </div>
-          <div className="canvas-stage"><GlyphCanvas glyph={glyph} penWidth={penWidth} penColor={penColor} eraserSize={eraserSize} toolMode={toolMode} showGuides={showGuides} onCommit={commitStrokes} /></div>
+          <div className="canvas-instructions"><span>Рабочее поле</span><span>Мышь, палец или стилус</span></div>
+          <div className="canvas-stage"><GlyphCanvas glyph={glyph} penWidth={penWidth} penColor={penColor} eraserSize={eraserSize} eraserMode={eraserMode} toolMode={toolMode} showGuides={showGuides} onCommit={commitStrokes} /></div>
           <div className="tool-row">
-            <div className="tool-mode-group" aria-label="Режим рисования">
-              <button type="button" className={toolMode === 'pen' ? 'selected' : ''} onClick={() => setToolMode('pen')}>Перо</button>
-              <button type="button" className={toolMode === 'eraser' ? 'selected' : ''} onClick={() => setToolMode('eraser')}>Ластик</button>
+            <div className="tool-mode-group" aria-label="Инструмент">
+              <button type="button" className={toolMode === 'pen' ? 'selected' : ''} onClick={() => setToolMode('pen')}>✎ Перо</button>
+              <button type="button" className={toolMode === 'eraser' ? 'selected' : ''} onClick={() => setToolMode('eraser')}>⌫ Ластик</button>
+              <button type="button" className={toolMode === 'selection' ? 'selected' : ''} onClick={() => setToolMode('selection')}>▱ Выделение</button>
             </div>
             {toolMode === 'pen' ? (
               <label className="range-control"><span>Толщина пера</span><input type="range" min="10" max="180" value={penWidth} onChange={event => setPenWidth(Number(event.target.value))} /><b>{penWidth}</b></label>
-            ) : (
-              <label className="range-control"><span>Размер ластика</span><input type="range" min="12" max="200" value={eraserSize} onChange={event => setEraserSize(Number(event.target.value))} /><b>{eraserSize}</b></label>
-            )}
+            ) : toolMode === 'eraser' ? (
+              <div className="eraser-controls">
+                <div className="segmented-control" aria-label="Тип ластика">
+                  <button type="button" className={eraserMode === 'soft' ? 'selected' : ''} onClick={() => setEraserMode('soft')}>Мягкий</button>
+                  <button type="button" className={eraserMode === 'hard' ? 'selected' : ''} onClick={() => setEraserMode('hard')}>Жёсткий</button>
+                </div>
+                <label className="range-control"><span>Размер</span><input type="range" min="12" max="200" value={eraserSize} onChange={event => setEraserSize(Number(event.target.value))} /><b>{eraserSize}</b></label>
+              </div>
+            ) : <p className="tool-hint">Выделите прямоугольную область на холсте — содержимое внутри будет удалено.</p>}
           </div>
           <div className="palette-row" aria-label="Цветовая палитра">
             <span>Цвет пера</span>
@@ -172,9 +187,10 @@ export default function App() {
             ))}
             <label className="custom-color" aria-label="Выбрать свой цвет"><input type="color" value={penColor} onChange={event => setPenColor(event.target.value)} /> Свой цвет</label>
           </div>
-          <p className="color-note">Цвета сохраняются в проекте и редакторе; экспорт OTF остаётся одноцветным.</p>
+          <p className="color-note">Мягкий ластик истончает линии; жёсткий удаляет фрагменты. OTF экспортируется одноцветным.</p>
           <div className="tool-buttons">
             <button className="button" onClick={undoLastAction} disabled={!canUndo}>↶ Отменить действие</button>
+            <button className="button" onClick={eraseLastStroke} disabled={!glyph.strokes?.length}>⌫ Стереть последний штрих</button>
             <button className="button" onClick={fitWidth}>Подогнать ширину</button>
             <button className="button danger" onClick={() => commitStrokes([])} disabled={!glyph.strokes?.length}>Очистить символ</button>
           </div>
@@ -201,7 +217,7 @@ export default function App() {
           <label className="button full import-button">Загрузить проект JSON<input type="file" accept="application/json,.json" onChange={importProject} /></label>
           <button className="button full danger" onClick={reset}>Очистить все рисунки</button>
         </div>
-        <div className="panel help-panel"><small>КАК ПОЛЬЗОВАТЬСЯ</small><p>Выберите символ, рисуйте пером или стирайте фрагменты ластиком. Цвета сохраняются в проекте; OTF экспортируется в одноцветном формате. Проект хранится в браузере на этом устройстве; используйте JSON для переноса.</p></div>
+        <div className="panel help-panel"><small>КАК ПОЛЬЗОВАТЬСЯ</small><p>Используйте перо, ластик или прямоугольное выделение. Последний штрих можно стереть отдельной кнопкой, а действия — отменить. Цвета сохраняются в проекте; OTF остаётся одноцветным.</p></div>
         <div className="status-line" role="status">{message}</div>
       </aside>
     </main>
