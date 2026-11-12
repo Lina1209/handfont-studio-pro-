@@ -9,9 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'HandFont Studio Pro',
-        short_name: 'HandFont Pro',
-        description: 'Студия создания рукописных шрифтов',
+        name: 'HandFont Studio',
+        short_name: 'HandFont',
+        description: 'Приложение для создания рукописных шрифтов',
         theme_color: '#111318',
         background_color: '#111318',
         display: 'standalone',
