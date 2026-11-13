@@ -53,7 +53,38 @@ export default function GlyphCanvas({ glyph, penWidth, showGuides, onCommit }) {
         ctx.stroke();
       }
     };
-    (glyph.strokes || []).forEach(paint);
+    // Отображение контуров, импортированных из рукописного бланка
+const outlines = Array.isArray(glyph.outlines) ? glyph.outlines : [];
+
+if (outlines.length) {
+  ctx.save();
+  ctx.fillStyle = penColor;
+  ctx.beginPath();
+
+  for (const contour of outlines) {
+    if (!Array.isArray(contour) || contour.length < 3) continue;
+
+    const first = contour[0];
+    if (!Number.isFinite(first?.x) || !Number.isFinite(first?.y)) continue;
+
+    ctx.moveTo(X(first.x), Y(first.y));
+
+    let valid = true;
+
+    for (const point of contour.slice(1)) {
+      if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+        valid = false;
+        break;
+      }
+      ctx.lineTo(X(point.x), Y(point.y));
+    }
+
+    if (valid) ctx.closePath();
+  }
+
+  ctx.fill('evenodd');
+  ctx.restore();
+}
     if (activeStroke.current) paint(activeStroke.current);
   }, [glyph, showGuides, redraw]);
 
