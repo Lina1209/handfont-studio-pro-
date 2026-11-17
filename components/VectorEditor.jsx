@@ -492,7 +492,37 @@ function patternContours(kind, size) {
 }
 
 const FAMILIES = ['Georgia', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Impact', 'Comic Sans MS', 'Trebuchet MS', 'Palatino Linotype', 'Segoe Script', 'Brush Script MT', 'cursive', 'serif', 'sans-serif', 'monospace'];
-const PATTERNS = [['star5', '★ Звезда 5'], ['star8', '✦ Звезда 8'], ['ring', '◎ Кольцо'], ['flower', '✿ Цветок'], ['heart', '♥ Сердце'], ['diamond', '◆ Ромб'], ['wave', '〜 Волна'], ['zigzag', '⩘ Зигзаг']];
+const PEN_STYLES = [['solid','Сплошная линия'],['dash','Короткий пунктир'],['longdash','Длинный штрих'],['dashdot','Штрих-точка'],['dots','Точки'],['calligraphy','Каллиграфическое'],['flower','Цветочки'],['leaves','Листочки'],['stars','Звёздочки'],['hearts','Сердечки'],['rings','Кружочки'],['ornament','Орнамент']];
+const PEN_MOTIFS = ['flower','leaves','stars','hearts','rings','ornament'];
+function motifContour(kind,cx,cy,r,angle=0){
+ const pts=[],count=kind==='flower'?24:kind==='stars'?10:kind==='leaves'?12:kind==='rings'?32:24;
+ for(let i=0;i<count;i++){const a=i/count*Math.PI*2+angle;let rr=r;
+  if(kind==='flower')rr=r*(i%4<2?1:.58);
+  if(kind==='stars')rr=r*(i%2?.42:1);
+  if(kind==='leaves')rr=r*(i%2?.35:1);
+  if(kind==='ornament')rr=r*(i%2?.62:1);
+  if(kind==='hearts')rr=r*(.78+.18*Math.cos(a*2));
+  pts.push({x:F(cx+Math.cos(a)*rr),y:F(cy+Math.sin(a)*rr)});
+ }return pts;
+}
+function samplePolyline(points,step){
+ const out=[];let carry=0;
+ for(let i=1;i<points.length;i++){const a=points[i-1],b=points[i],len=dist(a,b);if(len<1e-6)continue;
+  const ux=(b.x-a.x)/len,uy=(b.y-a.y)/len;let d=step-carry;
+  while(d<=len){out.push({x:a.x+ux*d,y:a.y+uy*d,angle:Math.atan2(uy,ux)});d+=step;}
+  carry=Math.max(0,len-(d-step));
+ }return out;
+}
+function dashedSegments(points,on,off){
+ const out=[];let drawing=true,remain=on,current=[];
+ for(let i=1;i<points.length;i++){const a=points[i-1],b=points[i],len=dist(a,b);if(len<1e-6)continue;
+  const ux=(b.x-a.x)/len,uy=(b.y-a.y)/len;let pos=0;
+  while(pos<len-1e-6){const take=Math.min(remain,len-pos),p1={x:a.x+ux*pos,y:a.y+uy*pos},p2={x:a.x+ux*(pos+take),y:a.y+uy*(pos+take)};
+   if(drawing){if(!current.length)current.push(p1);current.push(p2);}pos+=take;remain-=take;
+   if(remain<=1e-6){if(drawing&&current.length>1)out.push(current);current=[];drawing=!drawing;remain=drawing?on:off;}
+  }
+ }if(drawing&&current.length>1)out.push(current);return out;
+}
 const TOOL_DEFS = [
   ['select', 'V', 'Выбор / трансформация'],
   ['line', 'L', 'Прямая линия'],
@@ -537,6 +567,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [nodeMultiSelect, setNodeMultiSelect] = useState(false);
   const [cornerRadius, setCornerRadius] = useState(60);
   const [penMode, setPenMode] = useState('bezier');
+  const [penStyle, setPenStyle] = useState('solid');
+  const [penSpacing, setPenSpacing] = useState(58);
+  const [penStampSize, setPenStampSize] = useState(24);
   const [cornerPreview, setCornerPreview] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
@@ -1448,9 +1481,33 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const pen = penRef.current;
     if (penMode === 'freehand' && pen.dragging && pen.freehand.length > 2) {
       const rawPts=pen.freehand.slice();
-      const ribbon=strokeToContours(rawPts,Math.max(4,stateRef.current.brushWidth/2));
-      if(ribbon.length) commit(list=>{
-        const contours=ribbon.map(c=>({nodes:smoothNodes(c,.55)}));
+      const width=Math.max(4,stateRef.current.brushWidth/2);
+      let contours=[];
+      if(penStyle==='solid'||penStyle==='calligraphy'){
+        const ribbon=strokeToContours(rawPts,penStyle==='calligraphy'?Math.max(5,stateRef.current.brushWidth*.42):width);
+        contours=ribbon.map(c=>({nodes:smoothNodes(c,.55)}));
+      } else if(['dash','longdash','dashdot'].includes(penStyle)){
+        const unit=Math.max(12,penSpacing);
+        const on=penStyle==='dash'?unit*.55:penStyle==='longdash'?unit*1.5:unit*.85;
+        const off=penStyle==='longdash'?unit*.55:unit*.42;
+        for(const seg of dashedSegments(rawPts,on,off))for(const c of strokeToContours(seg,width))contours.push({nodes:smoothNodes(c,.35)});
+        if(penStyle==='dashdot')for(const p of samplePolyline(rawPts,unit*1.3)){
+          const circle=motifContour('rings',p.x,p.y,Math.max(3,width*.55));
+          contours.push({nodes:circle.map(q=>({x:q.x,y:q.y,hIn:null,hOut:null,smooth:false}))});
+        }
+      } else if(penStyle==='dots'){
+        for(const p of samplePolyline(rawPts,penSpacing)){
+          const circle=motifContour('rings',p.x,p.y,Math.max(3,width*.65));
+          contours.push({nodes:circle.map(q=>({x:q.x,y:q.y,hIn:null,hOut:null,smooth:false}))});
+        }
+      } else if(PEN_MOTIFS.includes(penStyle)){
+        for(const p of samplePolyline(rawPts,penSpacing)){
+          const poly=motifContour(penStyle,p.x,p.y,penStampSize,p.angle);
+          contours.push({nodes:poly.map(q=>({x:q.x,y:q.y,hIn:null,hOut:null,smooth:false}))});
+        }
+      }
+      if(contours.length) commit(list=>{
+
         const target=list.find(o=>o.id===stateRef.current.sel);
         if(target)target.contours.push(...contours);
         else{const no={id:uid(),contours};list.push(no);setSel(no.id);}
@@ -2145,7 +2202,11 @@ const roundSelectedCorner = () => {
           <label>Режим пера<select value={penMode} onChange={e=>{setPenMode(e.target.value);penRef.current.nodes=[];penRef.current.freehand=[];penRef.current.dragging=false;rerender();}}>
             <option value="bezier">Кривая Безье</option><option value="polyline">Ломаная / прямые</option><option value="freehand">Свободное рисование</option>
           </select></label>
-          <span className="ve-hint">{penMode==='bezier'?'Клик — узел · потянуть — задать ручки кривой.':penMode==='polyline'?'Клики ставят прямые узлы; двойной клик или Enter завершает контур.':'Зажми и веди пальцем — свободная линия с плавным контуром.'}</span>
+          <label>Вид пера<select value={penStyle} onChange={e=>setPenStyle(e.target.value)}>{PEN_STYLES.map(([v,label])=><option key={v} value={v}>{label}</option>)}</select></label>
+          {penMode==='freehand' && <label className="ve-range">Толщина<input type="range" min="8" max="180" value={brushWidth} onChange={e=>setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
+          {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||['dots','dash','longdash','dashdot'].includes(penStyle)) && <label className="ve-range">Интервал<input type="range" min="12" max="180" value={penSpacing} onChange={e=>setPenSpacing(Number(e.target.value))}/><b>{penSpacing}</b></label>}
+          {penMode==='freehand' && PEN_MOTIFS.includes(penStyle) && <label className="ve-range">Размер узора<input type="range" min="8" max="90" value={penStampSize} onChange={e=>setPenStampSize(Number(e.target.value))}/><b>{penStampSize}</b></label>}
+          <span className="ve-hint">{penMode==='bezier'?'Клик — узел · потянуть — задать ручки кривой.':penMode==='polyline'?'Клики ставят прямые узлы; двойной клик или Enter завершает контур.':'Зажми и веди пальцем. Стиль создаёт редактируемые векторные контуры.'}</span>
         </>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
         {tool === 'rect' && <span className="ve-hint">Потяните диагональ прямоугольника.</span>}
