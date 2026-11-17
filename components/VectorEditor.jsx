@@ -1295,6 +1295,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const setSelectedNodeCoord = (axis, value) => {
     const st = stateRef.current;
     const so = getObj();
+    if (String(value).trim() === '') return;
     const v = Number(value);
     if (!so || !st.selNode || !Number.isFinite(v)) return;
     commit(list => {
