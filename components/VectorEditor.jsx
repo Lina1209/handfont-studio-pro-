@@ -1496,8 +1496,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button danger" disabled={!bb} onClick={deleteSel} title="Удалить (Delete)">🗑</button>
         </>}
         {tool === 'node' && <>
-          <label>X<input type="number" step="1" value={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onChange={e => setSelectedNodeCoord('x', e.target.value)}/></label>
-          <label>Y<input type="number" step="1" value={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onChange={e => setSelectedNodeCoord('y', e.target.value)}/></label>
+          <label>X<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-x' : 'no-node-x'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('x', e.target.value)}/></label>
+          <label>Y<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-y' : 'no-node-y'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('y', e.target.value)}/></label>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
