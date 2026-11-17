@@ -1555,8 +1555,17 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         else if (mode === 'right') dx = value;
         else if (mode === 'up') dy = value;
         else if (mode === 'down') dy = -value;
-        n.x = F(n.x + dx); n.y = F(n.y + dy);
-        for (const h of ['hIn', 'hOut']) if (n[h]) { n[h].x = F(n[h].x + dx); n[h].y = F(n[h].y + dy); }
+        const oldX = n.x, oldY = n.y;
+        n.x = F(oldX + dx); n.y = F(oldY + dy);
+        for (const h of ['hIn', 'hOut']) if (n[h]) {
+          if (mode === 'scale') {
+            n[h].x = F(cx + (n[h].x - cx) * value);
+            n[h].y = F(cy + (n[h].y - cy) * value);
+          } else {
+            n[h].x = F(n[h].x + dx);
+            n[h].y = F(n[h].y + dy);
+          }
+        }
       }
       return list;
     });
