@@ -8,6 +8,7 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
   const canvasRef = useRef(null);
   const activeStroke = useRef(null);
   const selection = useRef(null);
+  const activePointerId = useRef(null);
   const [redraw, setRedraw] = useState(0);
 
   useEffect(() => {
@@ -76,7 +77,10 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
     return { x: (event.clientX - rect.left) / scale + VIEW.xMin, y: VIEW.yMax - (event.clientY - rect.top) / scale };
   };
   const down = event => {
-    event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
+    if (activePointerId.current !== null) return;
+    event.preventDefault();
+    activePointerId.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointFrom(event);
     if (toolMode === 'selection') selection.current = { start: point, end: point };
     else if (toolMode === 'eraser') activeStroke.current = { tool: 'eraser', mode: eraserMode, width: eraserSize, points: [point] };
@@ -84,6 +88,7 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
     setRedraw(value => value + 1);
   };
   const move = event => {
+    if (activePointerId.current !== event.pointerId) return;
     const point = pointFrom(event);
     if (selection.current) { selection.current.end = point; setRedraw(value => value + 1); return; }
     if (!activeStroke.current) return;
@@ -91,7 +96,9 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
     if (Math.hypot(point.x - last.x, point.y - last.y) > 2) points.push(point);
     setRedraw(value => value + 1);
   };
-  const finish = () => {
+  const finish = event => {
+    if (activePointerId.current !== event.pointerId) return;
+    activePointerId.current = null;
     if (selection.current) {
       const area = selection.current; selection.current = null;
       if (Math.abs(area.end.x - area.start.x) > 3 && Math.abs(area.end.y - area.start.y) > 3) onCommit(applySelectionToStrokes(glyph.strokes || [], area));
