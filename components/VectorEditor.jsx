@@ -1140,8 +1140,21 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   };
   const onPointerUp = e => {
     if (activePointerId.current !== e.pointerId) return;
-    activePointerId.current = null;
+    // Учитываем последнюю координату pointerup: палец может сдвинуться
+    // между последним pointermove и отпусканием.
+    const rawEnd = posFromEvent(e);
+    const endState = stateRef.current;
+    const endPoint = endState.snapToGrid
+      ? { x: Math.round(rawEnd.x / 100) * 100, y: Math.round(rawEnd.y / 100) * 100 }
+      : rawEnd;
     const g = gestureRef.current;
+    if (g && typeof g.upd === 'function') g.upd(endPoint, e);
+    if (brushRef.current) {
+      const pts = brushRef.current;
+      const last = pts[pts.length - 1];
+      if (!last || dist(last, endPoint) > 1) pts.push(endPoint);
+    }
+    activePointerId.current = null;
     gestureRef.current = null;
     if (g) {
       if (g.type === 'shape') {
