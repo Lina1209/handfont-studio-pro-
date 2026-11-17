@@ -1001,7 +1001,12 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           const exists = chosen.some(q => q.ci === nh.ci && q.ni === nh.ni);
           chosen = exists ? chosen.filter(q => q.ci !== nh.ci || q.ni !== nh.ni) : chosen.concat([nh]);
           setSelectedNodes(chosen);
-          setSelNode(nh);
+          // Если сняли выделение с активного узла, переключаем активность
+          // на последний оставшийся узел группы, а не оставляем «чужую» точку.
+          const nextActive = exists
+            ? (chosen[chosen.length - 1] || null)
+            : nh;
+          setSelNode(nextActive);
           rerender();
           return;
         }
@@ -1741,7 +1746,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         {tool === 'node' && <>
           <label>X<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-x' : 'no-node-x'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('x', e.target.value)}/></label>
           <label>Y<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-y' : 'no-node-y'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('y', e.target.value)}/></label>
-          <button className={`button ${nodeMultiSelect ? 'primary' : ''}`} onClick={() => { setNodeMultiSelect(v => !v); setSelectedNodes(st.selNode ? [st.selNode] : []); }} aria-pressed={nodeMultiSelect} title="Включить выбор нескольких узлов касанием">☷ Мультивыбор</button>
+          <button className={`button ${nodeMultiSelect ? 'primary' : ''}`} onClick={() => setNodeMultiSelect(v => !v)} aria-pressed={nodeMultiSelect} title="Включить выбор нескольких узлов касанием; выключение сохраняет группу для перемещения">☷ Мультивыбор</button>
           <button className="button" disabled={!selectedNodes.length} onClick={() => { setSelectedNodes([]); setSelNode(null); rerender(); }}>Снять выбор</button>
           <button className="button" disabled={selectedNodes.length < 2} onClick={() => alignSelectedNodes('x')} title="Выровнять выделенные узлы по общей вертикали">X выровнять</button>
           <button className="button" disabled={selectedNodes.length < 2} onClick={() => alignSelectedNodes('y')} title="Выровнять выделенные узлы по общей горизонтали">Y выровнять</button>
