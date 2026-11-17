@@ -1325,6 +1325,60 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
+  const makeNodeSymmetric = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const contour = ob?.contours[st.selNode.ci];
+      const n = contour?.nodes[st.selNode.ni];
+      if (!n || contour.nodes.length < 2) return list;
+      const prev = contour.nodes[(st.selNode.ni - 1 + contour.nodes.length) % contour.nodes.length];
+      const next = contour.nodes[(st.selNode.ni + 1) % contour.nodes.length];
+      let dx = 0, dy = 0, len = 0;
+      if (n.hOut && Math.hypot(n.hOut.x - n.x, n.hOut.y - n.y) > 0.001) {
+        dx = n.hOut.x - n.x; dy = n.hOut.y - n.y;
+        len = Math.hypot(dx, dy);
+      } else if (n.hIn && Math.hypot(n.hIn.x - n.x, n.hIn.y - n.y) > 0.001) {
+        dx = n.x - n.hIn.x; dy = n.y - n.hIn.y;
+        len = Math.hypot(dx, dy);
+      } else {
+        dx = next.x - prev.x; dy = next.y - prev.y;
+        len = Math.hypot(dx, dy) / 5;
+      }
+      const mag = Math.hypot(dx, dy);
+      if (mag < 0.001 || len < 0.001) return list;
+      const ux = dx / mag, uy = dy / mag;
+      n.hOut = { x: F(n.x + ux * len), y: F(n.y + uy * len) };
+      n.hIn = { x: F(n.x - ux * len), y: F(n.y - uy * len) };
+      n.smooth = true;
+      return list;
+    });
+    setMessage('Ручки узла выровнены по одной касательной и сделаны симметричными.');
+  };
+  const centerNodeBetweenNeighbors = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const contour = ob?.contours[st.selNode.ci];
+      const nodes = contour?.nodes;
+      const n = nodes?.[st.selNode.ni];
+      if (!n || nodes.length < 3) return list;
+      const prev = nodes[(st.selNode.ni - 1 + nodes.length) % nodes.length];
+      const next = nodes[(st.selNode.ni + 1) % nodes.length];
+      const x = (prev.x + next.x) / 2, y = (prev.y + next.y) / 2;
+      const dx = x - n.x, dy = y - n.y;
+      n.x = F(x); n.y = F(y);
+      for (const h of ['hIn', 'hOut']) if (n[h]) {
+        n[h].x = F(n[h].x + dx); n[h].y = F(n[h].y + dy);
+      }
+      return list;
+    });
+    setMessage('Узел помещён ровно посередине между соседними узлами.');
+  };
   const clearNodeHandles = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -1560,6 +1614,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
+          <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
+          <button className="button" disabled={!activeNode || !st.selNode || (st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes.length || 0) < 3} onClick={centerNodeBetweenNeighbors} title="Переместить узел в середину между соседними">↔ Середина</button>
           {['hIn','hOut'].map((which) => {
             const hp = handlePolar(activeNode, which);
             const label = which === 'hIn' ? 'Вход' : 'Выход';
