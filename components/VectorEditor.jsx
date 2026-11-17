@@ -1346,7 +1346,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       const k = screenK();
       const candidates = stateRef.current.objects.slice().reverse();
       for (const candidate of candidates) {
-        const hit = hitNode(candidate, p, Math.max(8 * k, stateRef.current.eraserR));
+        const hit = hitNode(candidate, p, Math.max(8 * k, Math.min(18 * k, stateRef.current.eraserR * 0.25)));
         if (!hit) continue;
         const before = stateRef.current.objects;
         const target = before.find(o => o.id === candidate.id);
@@ -1495,9 +1495,11 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     else if (st.tool === 'eraser') {
       gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
         upd(pp) {
-          const d = dist(pp, this.last), steps = Math.max(1, Math.ceil(d / (stateRef.current.eraserR * .4)));
-          for (let i = 1; i <= steps; i++) {
-            if (eraseAt({ x: this.last.x + (pp.x - this.last.x) * i / steps, y: this.last.y + (pp.y - this.last.y) * i / steps })) this.changed = true;
+          if (stateRef.current.eraserMode !== 'node') {
+            const d = dist(pp, this.last), steps = Math.max(1, Math.ceil(d / (stateRef.current.eraserR * .4)));
+            for (let i = 1; i <= steps; i++) {
+              if (eraseAt({ x: this.last.x + (pp.x - this.last.x) * i / steps, y: this.last.y + (pp.y - this.last.y) * i / steps })) this.changed = true;
+            }
           }
           this.last = pp;
         } };
