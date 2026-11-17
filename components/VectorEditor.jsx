@@ -1030,6 +1030,11 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const bb=selectedNodeBounds(o,refs);
     if (!bb) return false;
     const k=screenK(), tol=13*k, rotate={x:bb.cx,y:bb.y2+28*k};
+    // Узлы и ручки Безье имеют приоритет над рамкой: их можно редактировать
+    // напрямую, даже когда группа остаётся выделенной.
+    if (hitNode(o,p,9*k)) return false;
+    const active=st.selNode && o.contours[st.selNode.ci]?.nodes[st.selNode.ni];
+    if (active && (active.hIn && dist(p,active.hIn)<16*k || active.hOut && dist(p,active.hOut)<16*k)) return false;
     const handles=[['nw',bb.x,bb.y2],['n',bb.cx,bb.y2],['ne',bb.x2,bb.y2],['e',bb.x2,bb.cy],['se',bb.x2,bb.y],['s',bb.cx,bb.y],['sw',bb.x,bb.y],['w',bb.x,bb.cy]];
     let mode=null, anchor=null;
     if (dist(p,rotate)<tol) mode='rotate';
