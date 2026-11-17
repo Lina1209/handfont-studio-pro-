@@ -570,6 +570,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [penStyle, setPenStyle] = useState('solid');
   const [penSpacing, setPenSpacing] = useState(58);
   const [penStampSize, setPenStampSize] = useState(24);
+  const [customPens, setCustomPens] = useState([]);
   const [cornerPreview, setCornerPreview] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
@@ -1208,6 +1209,20 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   }
 
   /* ===== Перо / кисть / ластик ===== */
+  function saveCustomPen() {
+    const source=getObj();
+    if(!source || !source.contours?.length){setMessage('Сначала выделите нарисованный объект, чтобы сохранить его как перо.');return;}
+    const all=source.contours.map(c=>flattenContour(c,5)).filter(p=>p.length>=3);
+    const points=all.flat();
+    if(!points.length){setMessage('В выбранном объекте нет подходящих контуров.');return;}
+    const xs=points.map(p=>p.x),ys=points.map(p=>p.y);
+    const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+    const cx=(minX+maxX)/2,cy=(minY+maxY)/2,span=Math.max(maxX-minX,maxY-minY,1);
+    const contours=all.map(poly=>poly.map(p=>({x:(p.x-cx)/span,y:(p.y-cy)/span})));
+    const item={id:'custom_'+uid(),name:'Моё перо '+(customPens.length+1),contours};
+    setCustomPens(prev=>[...prev,item]);setPenStyle(item.id);setPenMode('freehand');
+    setMessage('Собственное перо сохранено. Теперь ведите пальцем по холсту, чтобы повторять узор вдоль линии.');
+  }
   function finishPen() {
     const pen = penRef.current;
     if (pen.nodes.length >= 3) {
@@ -1499,6 +1514,15 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         for(const p of samplePolyline(rawPts,penSpacing)){
           const circle=motifContour('rings',p.x,p.y,Math.max(3,width*.65));
           contours.push({nodes:circle.map(q=>({x:q.x,y:q.y,hIn:null,hOut:null,smooth:false}))});
+        }
+      } else if(customPens.some(p=>p.id===penStyle)){
+        const custom=customPens.find(p=>p.id===penStyle);
+        for(const p of samplePolyline(rawPts,penSpacing)){
+          const cs=custom.contours.map(poly=>({nodes:poly.map(q=>{
+            const x=q.x*penStampSize,y=q.y*penStampSize,ca=Math.cos(p.angle),sa=Math.sin(p.angle);
+            return {x:F(p.x+x*ca-y*sa),y:F(p.y+x*sa+y*ca),hIn:null,hOut:null,smooth:false};
+          })}));
+          contours.push(...cs);
         }
       } else if(PEN_MOTIFS.includes(penStyle)){
         for(const p of samplePolyline(rawPts,penSpacing)){
@@ -2202,10 +2226,11 @@ const roundSelectedCorner = () => {
           <label>Режим пера<select value={penMode} onChange={e=>{setPenMode(e.target.value);penRef.current.nodes=[];penRef.current.freehand=[];penRef.current.dragging=false;rerender();}}>
             <option value="bezier">Кривая Безье</option><option value="polyline">Ломаная / прямые</option><option value="freehand">Свободное рисование</option>
           </select></label>
-          <label>Вид пера<select value={penStyle} onChange={e=>setPenStyle(e.target.value)}>{PEN_STYLES.map(([v,label])=><option key={v} value={v}>{label}</option>)}</select></label>
+          <label>Вид пера<select value={penStyle} onChange={e=>setPenStyle(e.target.value)}>{PEN_STYLES.map(([v,label])=><option key={v} value={v}>{label}</option>)}{customPens.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+          <button className="button" type="button" disabled={!getObj()} onClick={saveCustomPen}>＋ Сохранить выделенный рисунок как перо</button>
           {penMode==='freehand' && <label className="ve-range">Толщина<input type="range" min="8" max="180" value={brushWidth} onChange={e=>setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
           {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||['dots','dash','longdash','dashdot'].includes(penStyle)) && <label className="ve-range">Интервал<input type="range" min="12" max="180" value={penSpacing} onChange={e=>setPenSpacing(Number(e.target.value))}/><b>{penSpacing}</b></label>}
-          {penMode==='freehand' && PEN_MOTIFS.includes(penStyle) && <label className="ve-range">Размер узора<input type="range" min="8" max="90" value={penStampSize} onChange={e=>setPenStampSize(Number(e.target.value))}/><b>{penStampSize}</b></label>}
+          {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||customPens.some(p=>p.id===penStyle)) && <label className="ve-range">Размер узора<input type="range" min="8" max="90" value={penStampSize} onChange={e=>setPenStampSize(Number(e.target.value))}/><b>{penStampSize}</b></label>}
           <span className="ve-hint">{penMode==='bezier'?'Клик — узел · потянуть — задать ручки кривой.':penMode==='polyline'?'Клики ставят прямые узлы; двойной клик или Enter завершает контур.':'Зажми и веди пальцем. Стиль создаёт редактируемые векторные контуры.'}</span>
         </>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
