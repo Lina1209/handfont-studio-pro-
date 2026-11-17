@@ -1416,6 +1416,50 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       ? 'Узел выровнен по горизонтали с предыдущим; ручки сохранены.'
       : 'Узел выровнен по вертикали с предыдущим; ручки сохранены.');
   };
+  const alignSelectedNodes = axis => {
+    const st = stateRef.current;
+    const so = getObj();
+    const refs = (st.selectedNodes || []).filter(p => Number.isInteger(p.ci) && Number.isInteger(p.ni));
+    if (!so || refs.length < 2) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const points = refs.map(p => ({ ref: p, node: ob?.contours[p.ci]?.nodes[p.ni] })).filter(p => p.node);
+      if (points.length < 2) return list;
+      const target = points.reduce((sum, p) => sum + p.node[axis], 0) / points.length;
+      for (const { node } of points) {
+        const delta = target - node[axis];
+        node[axis] = F(target);
+        for (const h of ['hIn', 'hOut']) if (node[h]) node[h][axis] = F(node[h][axis] + delta);
+      }
+      return list;
+    });
+    setMessage(axis === 'x' ? 'Выбранные узлы выровнены по общей вертикали.' : 'Выбранные узлы выровнены по общей горизонтали.');
+  };
+  const distributeSelectedNodes = axis => {
+    const st = stateRef.current;
+    const so = getObj();
+    const refs = (st.selectedNodes || []).filter(p => Number.isInteger(p.ci) && Number.isInteger(p.ni));
+    if (!so || refs.length < 3 || refs.some(p => p.ci !== refs[0].ci)) {
+      setMessage('Для распределения выбери минимум три узла одного контура.');
+      return;
+    }
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const contour = ob?.contours[refs[0].ci];
+      if (!contour || refs.some(p => !contour.nodes[p.ni])) return list;
+      const points = refs.map(p => ({ ni: p.ni, node: contour.nodes[p.ni] }))
+        .sort((a, b) => a.node[axis] - b.node[axis]);
+      const first = points[0].node[axis], last = points[points.length - 1].node[axis];
+      const step = (last - first) / (points.length - 1);
+      points.forEach((p, i) => {
+        const target = first + step * i, delta = target - p.node[axis];
+        p.node[axis] = F(target);
+        for (const h of ['hIn', 'hOut']) if (p.node[h]) p.node[h][axis] = F(p.node[h][axis] + delta);
+      });
+      return list;
+    });
+    setMessage(axis === 'x' ? 'Узлы распределены с равными промежутками по X.' : 'Узлы распределены с равными промежутками по Y.');
+  };
   const clearNodeHandles = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -1649,6 +1693,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <label>Y<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-y' : 'no-node-y'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('y', e.target.value)}/></label>
           <button className={`button ${nodeMultiSelect ? 'primary' : ''}`} onClick={() => { setNodeMultiSelect(v => !v); setSelectedNodes(st.selNode ? [st.selNode] : []); }} aria-pressed={nodeMultiSelect} title="Включить выбор нескольких узлов касанием">☷ Мультивыбор</button>
           <button className="button" disabled={!selectedNodes.length} onClick={() => { setSelectedNodes([]); setSelNode(null); rerender(); }}>Снять выбор</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => alignSelectedNodes('x')} title="Выровнять выделенные узлы по общей вертикали">X выровнять</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => alignSelectedNodes('y')} title="Выровнять выделенные узлы по общей горизонтали">Y выровнять</button>
+          <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('x')} title="Равные промежутки по X в одном контуре">X распределить</button>
+          <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('y')} title="Равные промежутки по Y в одном контуре">Y распределить</button>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
