@@ -139,6 +139,19 @@ function simplifyClosed(pts, eps) {
   const s2 = rdp(pts.slice(far).concat([pts[0]]), eps);
   return s1.slice(0, -1).concat(s2.slice(0, -1));
 }
+function roundedContours(source, refs, requested) {
+ const cs=clone(source), groups=new Map(), plans=[];
+ for(const r of refs){if(!groups.has(r.ci))groups.set(r.ci,new Set());groups.get(r.ci).add(r.ni);}
+ for(const [ci,set] of groups){const ns=cs[ci]?.nodes||[],n=ns.length;if(n<3)return null;const ids=[...set].filter(i=>Number.isInteger(i)&&i>=0&&i<n).sort((a,b)=>a-b);
+  for(let j=0;j<ids.length;j++)if(ids.length>1&&(ids[j]+1)%n===ids[(j+1)%ids.length])return null;
+  for(const i of ids){const p=ns[(i-1+n)%n],c=ns[i],q=ns[(i+1)%n];if(!p||!c||!q||p.hOut||c.hIn||c.hOut||q.hIn)return null;
+   const l=dist(p,c),m=dist(c,q);if(l<1e-6||m<1e-6)continue;const r=Math.min(requested,l*.45,m*.45);if(r<.5)continue;
+   const a=lerp(c,p,r/l),b=lerp(c,q,r/m);plans.push({ci,i,a,b,c1:lerp(a,c,2/3),c2:lerp(b,c,2/3)});
+  }}
+ if(!plans.length)return null;plans.sort((a,b)=>a.ci-b.ci||b.i-a.i);
+ for(const p of plans)cs[p.ci].nodes.splice(p.i,1,{x:F(p.a.x),y:F(p.a.y),smooth:true,hIn:null,hOut:{x:F(p.c1.x),y:F(p.c1.y)}},{x:F(p.b.x),y:F(p.b.y),smooth:true,hIn:{x:F(p.c2.x),y:F(p.c2.y)},hOut:null});
+ return {contours:cs,count:plans.length};
+}
 function smoothNodes(pts, f) {
   const n = pts.length, k = f / 4;
   return pts.map((p, i) => {
@@ -523,6 +536,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [selectedNodes, setSelectedNodes] = useState([]);
   const [nodeMultiSelect, setNodeMultiSelect] = useState(false);
   const [cornerRadius, setCornerRadius] = useState(60);
+  const [cornerPreview, setCornerPreview] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
   const [polygonSides, setPolygonSides] = useState(6);
@@ -703,7 +717,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         ctx.closePath();
       };
       for (const o of st.objects) {
-        const contours = displayContours(o);
+        const contours = cornerPreview && cornerPreview.objectId===o.id ? cornerPreview.contours : displayContours(o);
         const appearance = o.appearance || { opacity: 1, edgeOpacity: 0.95, centerOpacity: 0.18 };
         const bb = bboxOfContours(contours);
         ctx.save();
@@ -1512,71 +1526,16 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     transformSel(q => ({ x: bb.x + (q.x - bb.x) * s, y: bb.y + (q.y - bb.y) * s }));
     setMessage(`Высота подогнана под ${target} единиц.`);
   };
-  const roundSelectedCorner = () => {
-    const so = getObj();
-    const st = stateRef.current;
-    if (!so) return;
-    const refs = (st.selectedNodes || []).length ? st.selectedNodes : st.selNode ? [st.selNode] : [];
-    if (!refs.length) return;
-    const requested = Math.max(0, Number(cornerRadius) || 0);
-    const plans = [];
-    const grouped = new Map();
-    for (const ref of refs) {
-      if (!grouped.has(ref.ci)) grouped.set(ref.ci, new Set());
-      grouped.get(ref.ci).add(ref.ni);
-    }
-    for (const [ci, indices] of grouped) {
-      const nodes = so.contours[ci]?.nodes || [];
-      const count = nodes.length;
-      if (count < 3) continue;
-      const sorted = [...indices].filter(i => Number.isInteger(i) && i >= 0 && i < count).sort((a,b) => a-b);
-      // Соседние выбранные вершины нельзя округлять одновременно: у них общий сегмент.
-      for (let j=0; j<sorted.length; j++) {
-        const current=sorted[j], next=sorted[(j+1)%sorted.length];
-        if (sorted.length>1 && ((current+1)%count===next)) {
-          setMessage('Выберите несоседние углы: между двумя скруглениями должен остаться прямой сегмент.');
-          return;
-        }
-      }
-      for (const ni of sorted) {
-        const prev=nodes[(ni-1+count)%count], corner=nodes[ni], next=nodes[(ni+1)%count];
-        if (!prev || !corner || !next) continue;
-        if (prev.hOut || corner.hIn || corner.hOut || next.hIn) {
-          setMessage('Для точного скругления выберите острые углы на прямых сегментах без кривых.');
-          return;
-        }
-        const incoming=dist(prev,corner), outgoing=dist(corner,next);
-        const radius=Math.min(requested,incoming*.45,outgoing*.45);
-        if (radius<.5) continue;
-        const tIn={x:F(corner.x+(prev.x-corner.x)*radius/incoming),y:F(corner.y+(prev.y-corner.y)*radius/incoming)};
-        const tOut={x:F(corner.x+(next.x-corner.x)*radius/outgoing),y:F(corner.y+(next.y-corner.y)*radius/outgoing)};
-        const c1={x:F(tIn.x+(corner.x-tIn.x)*2/3),y:F(tIn.y+(corner.y-tIn.y)*2/3)};
-        const c2={x:F(tOut.x+(corner.x-tOut.x)*2/3),y:F(tOut.y+(corner.y-tOut.y)*2/3)};
-        plans.push({ci,ni,tIn,tOut,c1,c2});
-      }
-    }
-    if (!plans.length) {
-      setMessage('Не удалось скруглить выбранные углы: проверьте радиус и длину соседних сегментов.');
-      return;
-    }
-    commit(list => {
-      const ob=list.find(x=>x.id===so.id);
-      if (!ob) return list;
-      // Вставляем с конца каждого контура, чтобы индексы ещё не обработанных узлов не смещались.
-      plans.sort((a,b)=>a.ci-b.ci || b.ni-a.ni);
-      for (const p of plans) {
-        const ns=ob.contours[p.ci]?.nodes;
-        if (!ns || !ns[p.ni]) continue;
-        const first={x:p.tIn.x,y:p.tIn.y,smooth:true,hIn:null,hOut:{...p.c1}};
-        const second={x:p.tOut.x,y:p.tOut.y,smooth:true,hIn:{...p.c2},hOut:null};
-        ns.splice(p.ni,1,first,second);
-      }
-      return list;
-    });
-    setSelNode(plans.length===1 ? {ci:plans[0].ci,ni:plans[0].ni+1} : null);
-    setSelectedNodes([]);
-    setMessage(plans.length===1 ? 'Угол скруглён.' : 'Скруглено углов: '+plans.length+'.');
-  };
+  const updateCornerPreview = value => {
+ const so=getObj(),st=stateRef.current,refs=(st.selectedNodes||[]).length?st.selectedNodes:st.selNode?[st.selNode]:[];
+ const result=so&&refs.length?roundedContours(so.contours,refs,Math.max(0,Number(value)||0)):null;
+ setCornerPreview(result&&so?{objectId:so.id,contours:result.contours,count:result.count}:null);rerender();
+};
+const roundSelectedCorner = () => {
+ const so=getObj();if(!so||!cornerPreview||cornerPreview.objectId!==so.id)return;
+ const result=clone(cornerPreview);commit(list=>{const ob=list.find(x=>x.id===so.id);if(ob)ob.contours=result.contours;return list;});
+ setSelNode(null);setSelectedNodes([]);setCornerPreview(null);setMessage(result.count===1?'Угол скруглён.':'Скруглено углов: '+result.count+'.');
+};
 
   const addNodeAfter = () => {
     const so = getObj();
@@ -2139,8 +2098,12 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('curve')} title="Выраженная плавная кривая на выбранных узлах">Плавная кривая</button>
           <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('auto')} title="Сгладить весь контур, сохраняя выраженные острые углы">Авто контур</button>
           <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('sharp')} title="Сделать выбранные узлы острыми, без кривых">Острые узлы</button>
-          <label title="Радиус скругления в единицах контура">Радиус<input type="number" min="1" max="1000" step="5" value={cornerRadius} onChange={e => setCornerRadius(Math.max(0, Number(e.target.value) || 0))} disabled={!activeNode && !selectedNodes.length}/></label>
-          <button className="button" disabled={!activeNode && !selectedNodes.length} onClick={roundSelectedCorner} title="Скруглить один или несколько выбранных острых углов">◜ Скруглить</button>
+          <label title="Радиус скругления в единицах контура">Радиус
+            <input type="range" min="1" max="300" value={cornerRadius} onChange={e=>{const v=Number(e.target.value);setCornerRadius(v);updateCornerPreview(v);}} disabled={!activeNode&&!selectedNodes.length}/>
+            <input type="number" min="1" max="1000" step="5" value={cornerRadius} onChange={e=>{const v=Math.max(1,Number(e.target.value)||1);setCornerRadius(v);updateCornerPreview(v);}} disabled={!activeNode&&!selectedNodes.length}/>
+          </label>
+          <button className="button" disabled={!cornerPreview||cornerPreview.objectId!==st.sel} onClick={roundSelectedCorner}>✓ Применить скругление</button>
+          <button className="button" disabled={!cornerPreview} onClick={()=>{setCornerPreview(null);rerender();}}>Отменить просмотр</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
           <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
           <button className="button" disabled={!activeNode || !st.selNode || (st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes.length || 0) < 3} onClick={centerNodeBetweenNeighbors} title="Переместить узел в середину между соседними">↔ Середина</button>
