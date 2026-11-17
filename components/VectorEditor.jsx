@@ -1379,6 +1379,25 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     });
     setMessage('Узел помещён ровно посередине между соседними узлами.');
   };
+  const alignNodeAxisToPrevious = axis => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const nodes = ob?.contours[st.selNode.ci]?.nodes;
+      const n = nodes?.[st.selNode.ni];
+      if (!n || nodes.length < 2) return list;
+      const prev = nodes[(st.selNode.ni - 1 + nodes.length) % nodes.length];
+      const delta = prev[axis] - n[axis];
+      n[axis] = F(prev[axis]);
+      for (const h of ['hIn', 'hOut']) if (n[h]) n[h][axis] = F(n[h][axis] + delta);
+      return list;
+    });
+    setMessage(axis === 'x'
+      ? 'Узел выровнен по горизонтали с предыдущим; ручки сохранены.'
+      : 'Узел выровнен по вертикали с предыдущим; ручки сохранены.');
+  };
   const clearNodeHandles = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -1616,6 +1635,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
           <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
           <button className="button" disabled={!activeNode || !st.selNode || (st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes.length || 0) < 3} onClick={centerNodeBetweenNeighbors} title="Переместить узел в середину между соседними">↔ Середина</button>
+          <button className="button" disabled={!activeNode || !st.selNode} onClick={() => alignNodeAxisToPrevious('x')} title="Совместить X с предыдущим узлом">X сос.</button>
+          <button className="button" disabled={!activeNode || !st.selNode} onClick={() => alignNodeAxisToPrevious('y')} title="Совместить Y с предыдущим узлом">Y сос.</button>
           {['hIn','hOut'].map((which) => {
             const hp = handlePolar(activeNode, which);
             const label = which === 'hIn' ? 'Вход' : 'Выход';
