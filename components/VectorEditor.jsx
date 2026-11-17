@@ -1029,19 +1029,26 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     if (refs.length<2) return false;
     const bb=selectedNodeBounds(o,refs);
     if (!bb) return false;
-    const k=screenK(), tol=13*k, rotate={x:bb.cx,y:bb.y2+28*k};
-    // Узлы и ручки Безье имеют приоритет над рамкой: их можно редактировать
-    // напрямую, даже когда группа остаётся выделенной.
+    const k=screenK(), tol=22*k, rotate={x:bb.cx,y:bb.y2+28*k};
+    // Прямое редактирование узлов и ручек всегда важнее рамки.
     if (hitNode(o,p,9*k)) return false;
     const active=st.selNode && o.contours[st.selNode.ci]?.nodes[st.selNode.ni];
     if (active && (active.hIn && dist(p,active.hIn)<16*k || active.hOut && dist(p,active.hOut)<16*k)) return false;
     const handles=[['nw',bb.x,bb.y2],['n',bb.cx,bb.y2],['ne',bb.x2,bb.y2],['e',bb.x2,bb.cy],['se',bb.x2,bb.y],['s',bb.cx,bb.y],['sw',bb.x,bb.y],['w',bb.x,bb.cy]];
     let mode=null, anchor=null;
-    if (dist(p,rotate)<tol) mode='rotate';
-    if (!mode) for (const [name,x,y] of handles) if (Math.abs(p.x-x)<tol && Math.abs(p.y-y)<tol) {
-      mode='scale';
-      anchor={x:name.includes('w')?bb.x2:name.includes('e')?bb.x:bb.cx,y:name.includes('n')?bb.y:name.includes('s')?bb.y2:bb.cy};
-      break;
+    // Увеличенные невидимые зоны касания: удобно на телефоне, сами маркеры не растут.
+    if (dist(p,rotate)<tol*1.15) mode='rotate';
+    if (!mode) {
+      let nearest=null, nearestD=tol;
+      for (const item of handles) {
+        const d=dist(p,{x:item[1],y:item[2]});
+        if (d<nearestD) { nearest=item; nearestD=d; }
+      }
+      if (nearest) {
+        const name=nearest[0];
+        mode='scale';
+        anchor={x:name.includes('w')?bb.x2:name.includes('e')?bb.x:bb.cx,y:name.includes('n')?bb.y:name.includes('s')?bb.y2:bb.cy};
+      }
     }
     if (!mode && p.x>=bb.x-tol && p.x<=bb.x2+tol && p.y>=bb.y-tol && p.y<=bb.y2+tol) mode='move';
     if (!mode) return false;
@@ -1599,6 +1606,34 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
+  const setSelectedNodesSmooth = smooth => {
+    const so=getObj(), st=stateRef.current;
+    if (!so) return;
+    const refs=(st.selectedNodes||[]).length ? st.selectedNodes : st.selNode ? [st.selNode] : [];
+    if (!refs.length) return;
+    commit(list => {
+      const ob=list.find(x=>x.id===so.id);
+      if (!ob) return list;
+      for (const ref of refs) {
+        const ns=ob.contours[ref.ci]?.nodes, n=ns?.[ref.ni];
+        if (!n) continue;
+        n.smooth=!!smooth;
+        if (!smooth) { n.hIn=null; n.hOut=null; continue; }
+        const len=ns.length;
+        if (len<3) continue;
+        const prev=ns[(ref.ni-1+len)%len], next=ns[(ref.ni+1)%len];
+        const dx=next.x-prev.x, dy=next.y-prev.y;
+        const tangent=Math.hypot(dx,dy)||1;
+        const before=Math.hypot(n.x-prev.x,n.y-prev.y);
+        const after=Math.hypot(next.x-n.x,next.y-n.y);
+        const handle=Math.min(before,after)*0.22;
+        const ux=dx/tangent, uy=dy/tangent;
+        n.hIn={x:F(n.x-ux*handle),y:F(n.y-uy*handle)};
+        n.hOut={x:F(n.x+ux*handle),y:F(n.y+uy*handle)};
+      }
+      return list;
+    });
+  };
   const makeNodeSymmetric = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -2018,6 +2053,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={() => selectedNodes.length > 1 ? deleteSelectedNodes() : deleteNode()}>{selectedNodes.length > 1 ? '− узлы' : '− узел'}</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth(true)} title="Плавно скруглить выбранные узлы">Сгладить узлы</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth(false)} title="Сделать выбранные узлы острыми, без кривых">Острые узлы</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
           <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
           <button className="button" disabled={!activeNode || !st.selNode || (st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes.length || 0) < 3} onClick={centerNodeBetweenNeighbors} title="Переместить узел в середину между соседними">↔ Середина</button>
