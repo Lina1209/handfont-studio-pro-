@@ -47,15 +47,17 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
       }
 
       // Отображаем сохранённые контуры и штрихи независимо от активного указателя.
-      (glyph.outlines || []).forEach(contour => {
-        if (!Array.isArray(contour) || contour.length < 3) return;
-        ctx.fillStyle = '#e8e4da';
+      const outlines = (glyph.outlines || []).filter(contour => Array.isArray(contour) && contour.length >= 3);
+      if (outlines.length) {
         ctx.beginPath();
-        ctx.moveTo(X(contour[0].x), Y(contour[0].y));
-        for (const point of contour.slice(1)) ctx.lineTo(X(point.x), Y(point.y));
-        ctx.closePath();
-        ctx.fill();
-      });
+        for (const contour of outlines) {
+          ctx.moveTo(X(contour[0].x), Y(contour[0].y));
+          for (const point of contour.slice(1)) ctx.lineTo(X(point.x), Y(point.y));
+          ctx.closePath();
+        }
+        ctx.fillStyle = '#e8e4da';
+        ctx.fill('evenodd');
+      }
       (glyph.strokes || []).forEach(paint);
       if (selection.current) {
         const { start, end } = selection.current;
