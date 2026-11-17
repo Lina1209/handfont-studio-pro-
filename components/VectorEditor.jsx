@@ -1534,6 +1534,34 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     });
     setMessage(axis === 'x' ? 'Узлы распределены с равными промежутками по X.' : 'Узлы распределены с равными промежутками по Y.');
   };
+  const transformSelectedNodes = (mode, value = 1) => {
+    const so = getObj();
+    const refs = (stateRef.current.selectedNodes || []).filter(p => Number.isInteger(p.ci) && Number.isInteger(p.ni));
+    if (!so || refs.length < 2) return;
+    const current = refs.map(p => so.contours[p.ci]?.nodes[p.ni]).filter(Boolean);
+    if (current.length < 2) return;
+    const xs = current.map(n => n.x), ys = current.map(n => n.y);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      if (!ob) return list;
+      for (const p of refs) {
+        const n = ob.contours[p.ci]?.nodes[p.ni];
+        if (!n) continue;
+        let dx = 0, dy = 0;
+        if (mode === 'scale') { dx = (n.x - cx) * (value - 1); dy = (n.y - cy) * (value - 1); }
+        else if (mode === 'left') dx = -value;
+        else if (mode === 'right') dx = value;
+        else if (mode === 'up') dy = value;
+        else if (mode === 'down') dy = -value;
+        n.x = F(n.x + dx); n.y = F(n.y + dy);
+        for (const h of ['hIn', 'hOut']) if (n[h]) { n[h].x = F(n[h].x + dx); n[h].y = F(n[h].y + dy); }
+      }
+      return list;
+    });
+    setMessage(mode === 'scale' ? 'Размер группы узлов изменён.' : 'Группа узлов перемещена.');
+  };
   const clearNodeHandles = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -1790,6 +1818,12 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={selectedNodes.length < 2} onClick={() => alignSelectedNodes('y')} title="Выровнять выделенные узлы по общей горизонтали">Y выровнять</button>
           <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('x')} title="Равные промежутки по X в одном контуре">X распределить</button>
           <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('y')} title="Равные промежутки по Y в одном контуре">Y распределить</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('scale', 0.9)} title="Уменьшить группу относительно её центра">−10%</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('scale', 1.1)} title="Увеличить группу относительно её центра">+10%</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('left', 10)} title="Сдвинуть группу влево">← 10</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('right', 10)} title="Сдвинуть группу вправо">→ 10</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('up', 10)} title="Сдвинуть группу вверх">↑ 10</button>
+          <button className="button" disabled={selectedNodes.length < 2} onClick={() => transformSelectedNodes('down', 10)} title="Сдвинуть группу вниз">↓ 10</button>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={() => selectedNodes.length > 1 ? deleteSelectedNodes() : deleteNode()}>{selectedNodes.length > 1 ? '− узлы' : '− узел'}</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
