@@ -477,8 +477,18 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const canvasRef = useRef(null);
   const [objects, setObjects] = useState(() => {
     const list = [];
-    for (const contour of glyph.outlines || []) {
-      if (Array.isArray(contour) && contour.length >= 3) {
+    for (const stroke of Array.isArray(glyph.strokes) ? glyph.strokes : []) {
+      if (!stroke || !Array.isArray(stroke.points)) continue;
+      const contours = strokeToContours(stroke.points, (Number(stroke.width) || 70) / 2);
+      const valid = contours.map(contour => contour
+        .filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+        .map(p => ({ x: p.x, y: p.y, hIn: null, hOut: null, smooth: false })))
+        .filter(nodes => nodes.length >= 3);
+      if (valid.length) list.push({ id: uid(), contours: valid.map(nodes => ({ nodes })) });
+    }
+    for (const contour of Array.isArray(glyph.outlines) ? glyph.outlines : []) {
+      if (Array.isArray(contour) && contour.length >= 3 &&
+          contour.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) {
         list.push({ id: uid(), contours: [{ nodes: contour.map(p => ({ x: p.x, y: p.y, hIn: null, hOut: null, smooth: false })) }] });
       }
     }
