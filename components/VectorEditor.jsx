@@ -524,6 +524,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [polygonSides, setPolygonSides] = useState(6);
   const [showGuides, setShowGuides] = useState(true);
   const [showGrid, setShowGrid] = useState(false);
+  const [snapToGrid, setSnapToGrid] = useState(false);
   const [eraserR, setEraserR] = useState(45);
   const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
   const [importOpen, setImportOpen] = useState(false);
@@ -548,7 +549,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR, polygonSides, showGuides, showGrid };
+  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
   const brushRef = useRef(null);
@@ -1069,12 +1070,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     e.preventDefault();
     activePointerId.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const p = posFromEvent(e);
+    const raw = posFromEvent(e);
+    const st = stateRef.current;
+    const p = st.snapToGrid ? { x: Math.round(raw.x / 100) * 100, y: Math.round(raw.y / 100) * 100 } : raw;
     const now = performance.now();
     const lt = lastTapRef.current;
     const dbl = now - lt.t < 350 && Math.hypot(p.x - lt.x, p.y - lt.y) < 14 * screenK();
     lastTapRef.current = { t: now, x: p.x, y: p.y };
-    const st = stateRef.current;
     if (st.tool === 'hand' || spaceRef.current || e.button === 1) {
       const rect = canvasRef.current.getBoundingClientRect();
       gestureRef.current = { type: 'pan', v0: { ...st.view }, sx: e.clientX, sy: e.clientY, rectH: rect.height,
@@ -1109,8 +1111,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   };
   const onPointerMove = e => {
     if (importOpenRef.current || activePointerId.current !== e.pointerId) return;
-    const p = posFromEvent(e);
+    const raw = posFromEvent(e);
     const st = stateRef.current;
+    const p = st.snapToGrid ? { x: Math.round(raw.x / 100) * 100, y: Math.round(raw.y / 100) * 100 } : raw;
     if (st.tool === 'eraser') eraserPosRef.current = p;
     const g = gestureRef.current;
     if (g) { e.preventDefault(); g.upd(p, e); rerender(); return; }
@@ -1489,6 +1492,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         {tool === 'polygon' && <><label className="ve-range">Стороны<input type="range" min="3" max="12" step="1" value={polygonSides} onChange={e => setPolygonSides(Number(e.target.value))}/><b>{polygonSides}</b></label><span className="ve-hint">Потяните диагональ многоугольника.</span></>}
         <button className={`button ${showGuides ? 'primary' : ''}`} onClick={() => setShowGuides(v => !v)} aria-pressed={showGuides}>Направляющие {showGuides ? '✓' : '○'}</button>
         <button className={`button ${showGrid ? 'primary' : ''}`} onClick={() => setShowGrid(v => !v)} aria-pressed={showGrid}>Сетка {showGrid ? '✓' : '○'}</button>
+        <button className={`button ${snapToGrid ? 'primary' : ''}`} onClick={() => { setSnapToGrid(v => !v); setShowGrid(true); }} aria-pressed={snapToGrid} title="Привязка точек к шагу сетки 100">Привязка {snapToGrid ? '✓' : '○'}</button>
         {(tool === 'brush' || tool === 'line') && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
         {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
