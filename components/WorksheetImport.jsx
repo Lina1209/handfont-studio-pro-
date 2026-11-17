@@ -17,9 +17,13 @@ export default function WorksheetImport({ onImport, onPrint }) {
     if (!file) { setNote('Сначала выберите фото или скан бланка.'); return; }
     setBusy(true); setNote('Распознаю контрастные штрихи…');
     try {
-      const glyphs = await scanWorksheetFile(file, page);
-      onImport(glyphs);
-      setNote(`Импортировано символов: ${glyphs.length}. Проверьте каждый знак и поправьте контуры в редакторе.`);
+      const scan = await scanWorksheetFile(file, page);
+      const glyphs = Array.isArray(scan?.glyphs) ? scan.glyphs : [];
+      if (!glyphs.length) throw new Error('На выбранной странице не найдено символов.');
+      onImport(scan);
+      const skipped = Array.isArray(scan.skipped) ? scan.skipped : [];
+      const alignment = scan.aligned ? 'Угловые метки найдены.' : 'Внимание: лист обработан без угловых меток, точность может быть ниже.';
+      setNote(`Импортировано символов: ${glyphs.length}. ${alignment}${skipped.length ? ` Пропущены пустые/нечёткие ячейки: ${skipped.join(' ')}.` : ''} Проверьте каждый знак в библиотеке.`);
     } catch (error) { setNote(error.message || 'Не удалось обработать изображение.'); }
     finally { setBusy(false); }
   };
