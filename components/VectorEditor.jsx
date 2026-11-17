@@ -1349,6 +1349,41 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
+  const deleteSelectedNodes = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    const refs = (st.selectedNodes || []).filter(p =>
+      Number.isInteger(p.ci) && Number.isInteger(p.ni)
+    );
+    if (!so || !refs.length) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      if (!ob) return list;
+      const byContour = new Map();
+      for (const p of refs) {
+        if (!byContour.has(p.ci)) byContour.set(p.ci, new Set());
+        byContour.get(p.ci).add(p.ni);
+      }
+      // Удаляем с конца, чтобы индексы оставшихся узлов не смещались.
+      for (const [ci, indices] of [...byContour.entries()].sort((a, b) => b[0] - a[0])) {
+        const contour = ob.contours[ci];
+        if (!contour) continue;
+        for (const ni of [...indices].sort((a, b) => b - a)) {
+          if (ni >= 0 && ni < contour.nodes.length) contour.nodes.splice(ni, 1);
+        }
+        if (contour.nodes.length < 3) ob.contours.splice(ci, 1);
+      }
+      if (!ob.contours.length) {
+        const index = list.findIndex(x => x.id === ob.id);
+        if (index >= 0) list.splice(index, 1);
+        setSel(null);
+      }
+      setSelectedNodes([]);
+      setSelNode(null);
+      return list;
+    });
+    setMessage('Выделенные узлы удалены.');
+  };
   const setSelectedNodeCoord = (axis, value) => {
     const st = stateRef.current;
     const so = getObj();
@@ -1650,7 +1685,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyD') { e.preventDefault(); duplicateSel(); return; }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
-        if (stateRef.current.tool === 'node' && stateRef.current.selNode) deleteNode();
+        if (stateRef.current.tool === 'node' && stateRef.current.selNode) {
+          if (stateRef.current.selectedNodes.length > 1) deleteSelectedNodes();
+          else deleteNode();
+        }
         else deleteSel();
         return;
       }
@@ -1753,7 +1791,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('x')} title="Равные промежутки по X в одном контуре">X распределить</button>
           <button className="button" disabled={selectedNodes.length < 3 || new Set(selectedNodes.map(p => p.ci)).size !== 1} onClick={() => distributeSelectedNodes('y')} title="Равные промежутки по Y в одном контуре">Y распределить</button>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
-          <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
+          <button className="button" disabled={!st.selNode} onClick={() => selectedNodes.length > 1 ? deleteSelectedNodes() : deleteNode()}>{selectedNodes.length > 1 ? '− узлы' : '− узел'}</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
           <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
