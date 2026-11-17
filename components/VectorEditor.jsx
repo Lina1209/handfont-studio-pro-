@@ -1158,7 +1158,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         const initialCenter = { x: (first.x + raw.x) / 2, y: (first.y + raw.y) / 2 };
         const initialDistance = Math.max(0.001, dist(first, raw));
         const initialAngle = Math.atan2(raw.y - first.y, raw.x - first.x);
-        const source = refs.map(q => ({ ci: q.ci, ni: q.ni, node: clone(so.contours[q.ci]?.nodes[q.ni]) })).filter(q => q.node);
+        const source = refs.map(q => {
+          const node = so.contours[q.ci]?.nodes[q.ni];
+          return node ? { ci: q.ci, ni: q.ni, node: clone(node) } : null;
+        }).filter(Boolean);
         if (source.length >= 2) {
           gestureRef.current = {
             type: 'nodeTransform', snap: currentGesture.snap, objId: so.id, refs,
