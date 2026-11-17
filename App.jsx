@@ -30,7 +30,7 @@ export default function App() {
   const applyVector = ({ outlines, advanceWidth }) => {
     const oldGlyph = project.glyphs[activeCode] || makeGlyph(charOf(activeCode));
     setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [], advanceWidth: oldGlyph.advanceWidth }].slice(-50) }));
-    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...(previous.glyphs[activeCode] || makeGlyph(charOf(activeCode))), outlines, advanceWidth } } }));
+    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...(previous.glyphs[activeCode] || makeGlyph(charOf(activeCode))), strokes: [], outlines, advanceWidth } } }));
     setVectorOpen(false);
     setMessage('Векторные объекты записаны в символ. Экспортируйте TTF/WOFF или ZIP.');
   };
