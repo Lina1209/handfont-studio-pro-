@@ -597,6 +597,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [showGrid, setShowGrid] = useState(false);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [eraserR, setEraserR] = useState(45);
+  const [eraserMode, setEraserMode] = useState('brush');
   const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
   const [importOpen, setImportOpen] = useState(false);
   const [importTab, setImportTab] = useState('pattern');
@@ -620,7 +621,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, polygonSides, showGuides, showGrid, snapToGrid };
+  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, eraserMode, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null, freehand: [] });
   const brushRef = useRef(null);
@@ -1242,6 +1243,17 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     setCustomPens(prev=>[...prev,item]);setPenStyle(item.id);setPenMode('freehand');
     setMessage('Собственное перо сохранено. Теперь ведите пальцем по холсту, чтобы повторять узор вдоль линии.');
   }
+  function deleteSelectedObject() {
+    const id = stateRef.current.sel;
+    if (!id || !stateRef.current.objects.some(o => o.id === id)) {
+      setMessage('Сначала выберите объект инструментом «Ластик целого объекта».');
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm('Удалить выбранный объект целиком? Это действие можно отменить кнопкой «Шаг назад».')) return;
+    commit(list => list.filter(o => o.id !== id));
+    setSel(null); setSelNode(null); setSelectedNodes([]);
+    setMessage('Объект удалён. Его можно вернуть кнопкой «Шаг назад».');
+  }
   function exportCustomPens() {
     if (!customPens.length) { setMessage('Библиотека пока пуста — сначала сохраните собственное перо.'); return; }
     try {
@@ -1330,6 +1342,28 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     rerender();
   }
   function eraseAt(p) {
+    if (stateRef.current.eraserMode === 'node') {
+      const k = screenK();
+      const candidates = stateRef.current.objects.slice().reverse();
+      for (const candidate of candidates) {
+        const hit = hitNode(candidate, p, Math.max(8 * k, stateRef.current.eraserR));
+        if (!hit) continue;
+        const before = stateRef.current.objects;
+        const target = before.find(o => o.id === candidate.id);
+        if (!target) return false;
+        const nodes = target.contours[hit.ci]?.nodes;
+        if (!nodes) return false;
+        if (nodes.length > 3) nodes.splice(hit.ni, 1);
+        else target.contours.splice(hit.ci, 1);
+        if (!target.contours.length) {
+          const oi = before.findIndex(o => o.id === target.id);
+          if (oi >= 0) before.splice(oi, 1);
+          if (stateRef.current.sel === target.id) { setSel(null); setSelNode(null); }
+        }
+        return true;
+      }
+      return false;
+    }
     const r2 = stateRef.current.eraserR ** 2;
     let changed = false;
     const list = stateRef.current.objects;
@@ -1451,6 +1485,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       rerender();
     }
     else if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
+    else if (st.tool === 'eraser' && st.eraserMode === 'object') {
+      const target = hitObject(p, screenK());
+      if (target) { setSel(target.id); setSelNode(null); setSelectedNodes([]); setMessage('Объект выбран. Нажмите «Удалить выбранный объект», чтобы удалить его целиком.'); }
+      else setMessage('Коснитесь объекта, чтобы выбрать его для удаления.');
+      rerender();
+      return;
+    }
     else if (st.tool === 'eraser') {
       gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
         upd(pp) {
@@ -2312,9 +2353,17 @@ const roundSelectedCorner = () => {
         <button className={`button ${snapToGrid ? 'primary' : ''}`} onClick={() => { setSnapToGrid(v => !v); setShowGrid(true); }} aria-pressed={snapToGrid} title="Привязка точек к шагу сетки 100">Привязка {snapToGrid ? '✓' : '○'}</button>
         {(tool === 'brush' || tool === 'line') && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
         {tool === 'eraser' && <>
-          <label className="ve-range">Размер ластика<input type="range" min="6" max="200" step="2" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>
+          <label className="ve-range">Режим стирания
+            <select value={eraserMode} onChange={e => setEraserMode(e.target.value)}>
+              <option value="brush">Обычный ластик</option>
+              <option value="node">Удаление узлов</option>
+              <option value="object">Целый объект</option>
+            </select>
+          </label>
+          {eraserMode !== 'object' && <label className="ve-range">Размер ластика<input type="range" min="6" max="200" step="2" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
+          {eraserMode === 'object' && <button className="button" type="button" disabled={!sel} onClick={deleteSelectedObject}>Удалить выбранный объект</button>}
           <button className="button" type="button" disabled={!historyRef.current.u.length} onClick={undo} title="Вернуть последнее действие ластика">↶ Шаг назад</button>
-          <span className="ve-hint">Стирайте небольшими движениями. Каждый отдельный проход ластика можно отменить кнопкой «Шаг назад».</span>
+          <span className="ve-hint">{eraserMode === 'brush' ? 'Стирайте участки контура небольшими движениями.' : eraserMode === 'node' ? 'Коснитесь узла, чтобы удалить только его. Контур из трёх узлов удаляется как отдельная часть.' : 'Коснитесь объекта, затем подтвердите удаление кнопкой. Остальные объекты не затрагиваются.'} Отдельное действие можно отменить кнопкой «Шаг назад».</span>
         </>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
         <span className="ve-flex"/>
