@@ -1242,6 +1242,47 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     setCustomPens(prev=>[...prev,item]);setPenStyle(item.id);setPenMode('freehand');
     setMessage('Собственное перо сохранено. Теперь ведите пальцем по холсту, чтобы повторять узор вдоль линии.');
   }
+  function exportCustomPens() {
+    if (!customPens.length) { setMessage('Библиотека пока пуста — сначала сохраните собственное перо.'); return; }
+    try {
+      const payload = { format: 'handfont-custom-pens', version: 1, exportedAt: new Date().toISOString(), pens: customPens };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'handfont-artistic-pens.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage('Библиотека перьев экспортирована в JSON-файл.');
+    } catch { setMessage('Не удалось подготовить файл библиотеки перьев.'); }
+  }
+  async function importCustomPens(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const incoming = Array.isArray(parsed) ? parsed : parsed?.pens;
+      if (!Array.isArray(incoming)) throw new Error('invalid');
+      const valid = incoming.filter(p => p && typeof p.name === 'string' &&
+        Array.isArray(p.contours) && p.contours.length > 0 &&
+        p.contours.every(c => Array.isArray(c) && c.length >= 3 &&
+          c.every(pt => Number.isFinite(pt?.x) && Number.isFinite(pt?.y))))
+        .slice(0, 50);
+      if (!valid.length) throw new Error('empty');
+      setCustomPens(prev => {
+        const merged = [...prev];
+        for (const p of valid) {
+          if (merged.length >= 50) break;
+          const id = 'custom_' + uid();
+          merged.push({ id, name: p.name.slice(0, 60), contours: p.contours.map(c => c.map(pt => ({ x: pt.x, y: pt.y }))) });
+        }
+        return merged;
+      });
+      setMessage('Импортировано перьев: ' + valid.length + '. Повторяющиеся имена допустимы — импорт добавляет узоры к библиотеке.');
+    } catch {
+      setMessage('Не удалось прочитать файл. Нужен корректный JSON-файл библиотеки HandFont Studio.');
+    }
+  }
   function deleteSelectedCustomPen() {
     if (!customPens.some(p => p.id === penStyle)) return;
     setCustomPens(prev => prev.filter(p => p.id !== penStyle));
@@ -2253,6 +2294,9 @@ const roundSelectedCorner = () => {
           </select></label>
           <label>Вид пера<select value={penStyle} onChange={e=>setPenStyle(e.target.value)}>{PEN_STYLES.map(([v,label])=><option key={v} value={v}>{label}</option>)}{customPens.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
           <button className="button" type="button" disabled={!getObj()} onClick={saveCustomPen}>＋ Сохранить выделенный рисунок как перо</button>
+          <button className="button" type="button" disabled={!customPens.length} onClick={exportCustomPens}>⇩ Экспорт перьев в файл</button>
+          <button className="button" type="button" onClick={()=>document.getElementById('customPenImportFile')?.click()}>⇧ Импорт перьев из файла</button>
+          <input id="customPenImportFile" type="file" accept=".json,application/json" onChange={importCustomPens} style={{display:'none'}} />
           {customPens.some(p=>p.id===penStyle) && <button className="button" type="button" onClick={deleteSelectedCustomPen}>Удалить выбранное моё перо</button>}
           {penMode==='freehand' && <label className="ve-range">Толщина<input type="range" min="8" max="180" value={brushWidth} onChange={e=>setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
           {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||['dots','dash','longdash','dashdot'].includes(penStyle)) && <label className="ve-range">Интервал<input type="range" min="12" max="180" value={penSpacing} onChange={e=>setPenSpacing(Number(e.target.value))}/><b>{penSpacing}</b></label>}
@@ -2267,7 +2311,11 @@ const roundSelectedCorner = () => {
         <button className={`button ${showGrid ? 'primary' : ''}`} onClick={() => setShowGrid(v => !v)} aria-pressed={showGrid}>Сетка {showGrid ? '✓' : '○'}</button>
         <button className={`button ${snapToGrid ? 'primary' : ''}`} onClick={() => { setSnapToGrid(v => !v); setShowGrid(true); }} aria-pressed={snapToGrid} title="Привязка точек к шагу сетки 100">Привязка {snapToGrid ? '✓' : '○'}</button>
         {(tool === 'brush' || tool === 'line') && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
-        {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
+        {tool === 'eraser' && <>
+          <label className="ve-range">Размер ластика<input type="range" min="6" max="200" step="2" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>
+          <button className="button" type="button" disabled={!historyRef.current.u.length} onClick={undo} title="Вернуть последнее действие ластика">↶ Шаг назад</button>
+          <span className="ve-hint">Стирайте небольшими движениями. Каждый отдельный проход ластика можно отменить кнопкой «Шаг назад».</span>
+        </>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
         <span className="ve-flex"/>
         <button className="button" onClick={undo} title="Ctrl+Z">↩</button>
