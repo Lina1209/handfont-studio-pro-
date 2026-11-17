@@ -556,6 +556,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
   const brushRef = useRef(null);
   const historyRef = useRef({ u: [], r: [] });
+  const appearanceEditRef = useRef(null);
   const spaceRef = useRef(false);
   const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
   const eraserPosRef = useRef(null);
@@ -595,6 +596,25 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   };
 
   const getObj = list => (list || stateRef.current.objects).find(o => o.id === stateRef.current.sel) || null;
+  const beginAppearanceEdit = () => {
+    if (!appearanceEditRef.current) appearanceEditRef.current = clone(stateRef.current.objects);
+  };
+  const changeAppearance = (key, value) => {
+    const so = getObj();
+    if (!so) return;
+    beginAppearanceEdit();
+    const next = clone(stateRef.current.objects);
+    const ob = next.find(o => o.id === so.id);
+    if (!ob) return;
+    ob.appearance = { opacity: 1, edgeOpacity: 0.95, centerOpacity: 0.18, ...(ob.appearance || {}), [key]: Number(value) / 100 };
+    setObjects(next);
+  };
+  const endAppearanceEdit = () => {
+    if (!appearanceEditRef.current) return;
+    pushHistory(appearanceEditRef.current);
+    appearanceEditRef.current = null;
+    setMessage('Внешний вид символа изменён. При экспорте шрифта сохраняется геометрия контура.');
+  };
 
   const posFromEvent = e => {
     const canvas = canvasRef.current;
@@ -667,10 +687,24 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         ctx.closePath();
       };
       for (const o of st.objects) {
-        ctx.fillStyle = o.id === st.sel ? '#efe9dc' : '#d9d4c8';
+        const contours = displayContours(o);
+        const appearance = o.appearance || { opacity: 1, edgeOpacity: 0.95, centerOpacity: 0.18 };
+        const bb = bboxOfContours(contours);
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, appearance.opacity ?? 1));
         ctx.beginPath();
-        for (const c of displayContours(o)) tracePath(c);
+        for (const c of contours) tracePath(c);
+        if (bb) {
+          const radius = Math.max(1, Math.hypot(bb.w, bb.h) * scale * 0.72);
+          const gradient = ctx.createRadialGradient(X(bb.cx), Y(bb.cy), 0, X(bb.cx), Y(bb.cy), radius);
+          const centerA = Math.max(0, Math.min(1, appearance.centerOpacity ?? 0.18));
+          const edgeA = Math.max(0, Math.min(1, appearance.edgeOpacity ?? 0.95));
+          gradient.addColorStop(0, 'rgba(239,233,220,' + centerA + ')');
+          gradient.addColorStop(1, 'rgba(105,98,87,' + edgeA + ')');
+          ctx.fillStyle = gradient;
+        } else ctx.fillStyle = o.id === st.sel ? '#efe9dc' : '#d9d4c8';
         ctx.fill('nonzero');
+        ctx.restore();
       }
       if (g && g.type === 'shape' && g.preview) {
         ctx.save(); ctx.globalAlpha = 0.58; ctx.fillStyle = '#8ea2ff'; ctx.strokeStyle = '#aab8ff'; ctx.lineWidth = 1.5;
@@ -1687,6 +1721,22 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.capHeight)} title="Высота прописной (700)">↕ 700</button>
           <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.xHeight)} title="Высота строчной (500)">↕ 500</button>
           <button className="button danger" disabled={!bb} onClick={deleteSel} title="Удалить (Delete)">🗑</button>
+          {bb && (() => {
+            const appearance = st.objects.find(o => o.id === st.sel)?.appearance || { opacity: 1, edgeOpacity: 0.95, centerOpacity: 0.18 };
+            const controls = [
+              ['opacity', 'Общая прозрачность', Math.round((1 - appearance.opacity) * 100)],
+              ['edgeOpacity', 'Контур', Math.round((1 - appearance.edgeOpacity) * 100)],
+              ['centerOpacity', 'Внутри', Math.round((1 - appearance.centerOpacity) * 100)]
+            ];
+            return controls.map(([key, label, value]) => <label className="ve-range" key={key}>
+              {label}<input type="range" min="0" max="100" step="1" value={value}
+                onPointerDown={beginAppearanceEdit}
+                onChange={e => changeAppearance(key, 100 - Number(e.target.value))}
+                onPointerUp={endAppearanceEdit} onPointerCancel={endAppearanceEdit} onBlur={endAppearanceEdit}/>
+              <b>{value}%</b>
+            </label>);
+          })()}
+
         </>}
         {tool === 'node' && <>
           <label>X<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-x' : 'no-node-x'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('x', e.target.value)}/></label>
