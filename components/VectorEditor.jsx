@@ -672,6 +672,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
             return item ? { ...clone(item) } : n;
           }) }));
         }
+        if (g.type === 'nodeGroupTransform' && g.transformed) {
+          const transformed = new Map(g.transformed.map(item => [item.ci + ':' + item.ni, item.node]));
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => {
+            const item = transformed.get(ci + ':' + ni);
+            return item ? { ...clone(item) } : n;
+          }) }));
+        }
         if (g.type === 'node' && g.moved) {
           const d = g.delta;
           const selected = new Set((g.nodes || [{ ci: g.ci, ni: g.ni }]).map(q => q.ci + ':' + q.ni));
@@ -784,6 +791,19 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
             ctx.strokeRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
           });
         });
+        const refs=(st.selectedNodes||[]).filter(q=>so.contours[q.ci]?.nodes[q.ni]);
+        const groupBB=selectedNodeBounds(so,refs);
+        if (groupBB && refs.length>=2) {
+          const pad=7*scale, top=groupBB.y2+28*screenK();
+          ctx.save(); ctx.strokeStyle='#0f9d8a'; ctx.fillStyle='#fff'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+          ctx.strokeRect(X(groupBB.x)-pad,Y(groupBB.y2)-pad,groupBB.w*scale+2*pad,groupBB.h*scale+2*pad);
+          ctx.setLineDash([]);
+          const marks=[['nw',groupBB.x,groupBB.y2],['n',groupBB.cx,groupBB.y2],['ne',groupBB.x2,groupBB.y2],['e',groupBB.x2,groupBB.cy],['se',groupBB.x2,groupBB.y],['s',groupBB.cx,groupBB.y],['sw',groupBB.x,groupBB.y],['w',groupBB.x,groupBB.cy]];
+          for(const [,hx,hy] of marks){ctx.beginPath();ctx.arc(X(hx),Y(hy),5.5,0,Math.PI*2);ctx.fill();ctx.stroke();}
+          ctx.beginPath();ctx.moveTo(X(groupBB.cx),Y(groupBB.y2));ctx.lineTo(X(groupBB.cx),Y(top));ctx.stroke();
+          ctx.beginPath();ctx.arc(X(groupBB.cx),Y(top),6.5,0,Math.PI*2);ctx.fill();ctx.stroke();
+          ctx.restore();
+        }
       }
       if (st.tool === 'eraser' && eraserPosRef.current) {
         ctx.strokeStyle = '#ff8585'; ctx.fillStyle = 'rgba(255,133,133,.08)'; ctx.lineWidth = 1.2;
@@ -867,6 +887,16 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       if (!ob) return list;
       if (g.type === 'transform' && g.map) ob.contours = mapContours(ob.contours, g.map);
       if (g.type === 'nodeTransform' && g.transformed) {
+        for (const item of g.transformed) {
+          const nn = ob.contours[item.ci]?.nodes[item.ni];
+          if (!nn) continue;
+          nn.x = F(item.node.x); nn.y = F(item.node.y);
+          nn.hIn = item.node.hIn ? { x: F(item.node.hIn.x), y: F(item.node.hIn.y) } : null;
+          nn.hOut = item.node.hOut ? { x: F(item.node.hOut.x), y: F(item.node.hOut.y) } : null;
+          nn.smooth = item.node.smooth;
+        }
+      }
+      if (g.type === 'nodeGroupTransform' && g.transformed) {
         for (const item of g.transformed) {
           const nn = ob.contours[item.ci]?.nodes[item.ni];
           if (!nn) continue;
@@ -980,9 +1010,60 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       rerender();
     } else { setSel(null); setSelNode(null); rerender(); }
   }
+  function selectedNodeBounds(o, refs) {
+    const pts = [];
+    for (const q of refs || []) {
+      const n = o.contours[q.ci]?.nodes[q.ni];
+      if (!n) continue;
+      pts.push({x:n.x,y:n.y});
+      if (n.hIn) pts.push(n.hIn);
+      if (n.hOut) pts.push(n.hOut);
+    }
+    if (!pts.length) return null;
+    const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
+    const x=Math.min(...xs), x2=Math.max(...xs), y=Math.min(...ys), y2=Math.max(...ys);
+    return {x,x2,y,y2,w:Math.max(.001,x2-x),h:Math.max(.001,y2-y),cx:(x+x2)/2,cy:(y+y2)/2};
+  }
+  function nodeGroupBoxDown(p, e, o) {
+    const st=stateRef.current, refs=(st.selectedNodes||[]).filter(q=>o.contours[q.ci]?.nodes[q.ni]);
+    if (refs.length<2) return false;
+    const bb=selectedNodeBounds(o,refs);
+    if (!bb) return false;
+    const k=screenK(), tol=13*k, rotate={x:bb.cx,y:bb.y2+28*k};
+    const handles=[['nw',bb.x,bb.y2],['n',bb.cx,bb.y2],['ne',bb.x2,bb.y2],['e',bb.x2,bb.cy],['se',bb.x2,bb.y],['s',bb.cx,bb.y],['sw',bb.x,bb.y],['w',bb.x,bb.cy]];
+    let mode=null, anchor=null;
+    if (dist(p,rotate)<tol) mode='rotate';
+    if (!mode) for (const [name,x,y] of handles) if (Math.abs(p.x-x)<tol && Math.abs(p.y-y)<tol) {
+      mode='scale';
+      anchor={x:name.includes('w')?bb.x2:name.includes('e')?bb.x:bb.cx,y:name.includes('n')?bb.y:name.includes('s')?bb.y2:bb.cy};
+      break;
+    }
+    if (!mode && p.x>=bb.x-tol && p.x<=bb.x2+tol && p.y>=bb.y-tol && p.y<=bb.y2+tol) mode='move';
+    if (!mode) return false;
+    const source=refs.map(q=>({ci:q.ci,ni:q.ni,node:clone(o.contours[q.ci].nodes[q.ni])}));
+    const start={x:p.x,y:p.y}, startAngle=Math.atan2(p.y-bb.cy,p.x-bb.cx);
+    gestureRef.current={type:'nodeGroupTransform',snap:snap(),objId:o.id,source,transformed:[],moved:false,
+      upd(pp) {
+        let fn;
+        if(mode==='move') { const dx=pp.x-start.x,dy=pp.y-start.y; fn=q=>({x:q.x+dx,y:q.y+dy}); this.moved=Math.hypot(dx,dy)>.5; }
+        else if(mode==='rotate') { const a=Math.atan2(pp.y-bb.cy,pp.x-bb.cx)-startAngle,cs=Math.cos(a),sn=Math.sin(a); fn=q=>{const dx=q.x-bb.cx,dy=q.y-bb.cy;return{x:bb.cx+dx*cs-dy*sn,y:bb.cy+dx*sn+dy*cs};}; this.moved=Math.abs(a)>.002; }
+        else {
+          const sx=Math.max(.02,Math.min(50,(pp.x-anchor.x)/(start.x-anchor.x||.001)));
+          const sy=Math.max(.02,Math.min(50,(pp.y-anchor.y)/(start.y-anchor.y||.001)));
+          const useX=Math.abs(start.x-anchor.x)>tol*.1, useY=Math.abs(start.y-anchor.y)>tol*.1;
+          const ax=useX?sx:1, ay=useY?sy:1;
+          fn=q=>({x:anchor.x+(q.x-anchor.x)*ax,y:anchor.y+(q.y-anchor.y)*ay});
+          this.moved=Math.abs(ax-1)>.002||Math.abs(ay-1)>.002;
+        }
+        this.transformed=this.source.map(item=>{const mapPoint=q=>q?(()=>{const z=fn(q);return{x:F(z.x),y:F(z.y)};})():null;const n=item.node;return{ci:item.ci,ni:item.ni,node:{...n,...mapPoint(n),hIn:mapPoint(n.hIn),hOut:mapPoint(n.hOut)}};});
+      }
+    };
+    return true;
+  }
   function nodeDown(p, e, dbl) {
     const k = screenK();
     const so = getObj();
+    if (so && nodeGroupBoxDown(p,e,so)) { rerender(); return; }
     if (so) {
       const st = stateRef.current;
       if (st.selNode && so.contours[st.selNode.ci] && so.contours[st.selNode.ci].nodes[st.selNode.ni]) {
