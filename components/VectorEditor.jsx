@@ -536,6 +536,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [selectedNodes, setSelectedNodes] = useState([]);
   const [nodeMultiSelect, setNodeMultiSelect] = useState(false);
   const [cornerRadius, setCornerRadius] = useState(60);
+  const [penMode, setPenMode] = useState('bezier');
   const [cornerPreview, setCornerPreview] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
@@ -569,7 +570,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const stateRef = useRef({});
   stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
-  const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
+  const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null, freehand: [] });
   const brushRef = useRef(null);
   const historyRef = useRef({ u: [], r: [] });
   const appearanceEditRef = useRef(null);
@@ -748,6 +749,11 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         ctx.stroke();
       }
       const pen = penRef.current;
+      if (st.tool === 'pen' && penMode === 'freehand' && pen.freehand.length > 1) {
+        ctx.strokeStyle='#8ea2ff';ctx.lineWidth=2;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();
+        ctx.moveTo(X(pen.freehand[0].x),Y(pen.freehand[0].y));
+        for(const p of pen.freehand.slice(1))ctx.lineTo(X(p.x),Y(p.y));ctx.stroke();
+      }
       if (st.tool === 'pen' && pen.nodes.length) {
         ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -1184,12 +1190,14 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     rerender();
   }
   function penDown(p, dbl) {
-    const k = screenK();
-    const pen = penRef.current;
+    const k = screenK(), pen = penRef.current;
     if (dbl) { finishPen(); return; }
+    if (penMode === 'freehand') { pen.freehand = [p]; pen.dragging = true; return; }
     if (pen.nodes.length >= 3 && dist(p, pen.nodes[0]) < 12 * k) { finishPen(); return; }
     const n = { x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false };
-    pen.nodes.push(n); pen.dragging = true; pen.dragNode = n;
+    pen.nodes.push(n);
+    if (penMode === 'bezier') { pen.dragging = true; pen.dragNode = n; }
+    else { pen.dragging = false; pen.dragNode = null; }
     rerender();
   }
   function endBrush() {
@@ -1374,7 +1382,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     }
     if (st.tool === 'pen') {
       const pen = penRef.current;
-      if (pen.dragging && pen.dragNode) {
+      if (penMode === 'freehand' && pen.dragging && pen.freehand.length) {
+        const last=pen.freehand[pen.freehand.length-1];
+        if(dist(p,last)>2.5) pen.freehand.push({x:F(p.x),y:F(p.y)});
+      } else if (pen.dragging && pen.dragNode) {
         const n = pen.dragNode;
         if (Math.hypot(p.x - n.x, p.y - n.y) > 3) {
           n.hOut = { x: F(p.x), y: F(p.y) };
@@ -1435,7 +1446,18 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     }
     if (brushRef.current) endBrush();
     const pen = penRef.current;
-    if (pen.dragging) { pen.dragging = false; pen.dragNode = null; }
+    if (penMode === 'freehand' && pen.dragging && pen.freehand.length > 2) {
+      const rawPts=pen.freehand.slice();
+      const ribbon=strokeToContours(rawPts,Math.max(4,stateRef.current.brushWidth/2));
+      if(ribbon.length) commit(list=>{
+        const contours=ribbon.map(c=>({nodes:smoothNodes(c,.55)}));
+        const target=list.find(o=>o.id===stateRef.current.sel);
+        if(target)target.contours.push(...contours);
+        else{const no={id:uid(),contours};list.push(no);setSel(no.id);}
+        return list;
+      });
+    }
+    pen.freehand=[];pen.dragging=false;pen.dragNode=null;
     rerender();
   };
   const onWheel = e => {
@@ -2119,7 +2141,12 @@ const roundSelectedCorner = () => {
           })}
           <span className="ve-hint">Перетаскивай ручки или задавай их длину и угол числами. У гладкого узла противоположная ручка сохраняет направление.</span>
         </>}
-        {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
+        {tool === 'pen' && <>
+          <label>Режим пера<select value={penMode} onChange={e=>{setPenMode(e.target.value);penRef.current.nodes=[];penRef.current.freehand=[];penRef.current.dragging=false;rerender();}}>
+            <option value="bezier">Кривая Безье</option><option value="polyline">Ломаная / прямые</option><option value="freehand">Свободное рисование</option>
+          </select></label>
+          <span className="ve-hint">{penMode==='bezier'?'Клик — узел · потянуть — задать ручки кривой.':penMode==='polyline'?'Клики ставят прямые узлы; двойной клик или Enter завершает контур.':'Зажми и веди пальцем — свободная линия с плавным контуром.'}</span>
+        </>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
         {tool === 'rect' && <span className="ve-hint">Потяните диагональ прямоугольника.</span>}
         {tool === 'ellipse' && <span className="ve-hint">Потяните диагональ овала.</span>}
