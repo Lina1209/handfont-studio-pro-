@@ -42,8 +42,8 @@ export default function App() {
   }, [project]);
 
   const commitStrokes = useCallback(strokes => {
-    const old = project.glyphs[activeCode]?.strokes || [];
-    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), old].slice(-50) }));
+    const oldGlyph = project.glyphs[activeCode] || makeGlyph(charOf(activeCode));
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
     setProject(previous => {
       const current = previous.glyphs[activeCode] || makeGlyph(charOf(activeCode)); let advanceWidth = current.advanceWidth;
       if (!current.strokes?.length && !current.outlines?.length && strokes.length) { const maxX = Math.max(...strokes.flatMap(stroke => stroke.points.map(point => point.x)), 0); advanceWidth = Math.max(250, Math.min(1400, Math.round(maxX + 100))); }
@@ -51,12 +51,49 @@ export default function App() {
     });
     setMessage('Изменения символа сохранены.');
   }, [activeCode, project.glyphs]);
-  const importSheetGlyphs = imported => {
-    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, ...Object.fromEntries(imported.map(item => [item.code, { ...(previous.glyphs[item.code] || makeGlyph(item.char)), strokes: item.strokes, outlines: item.outlines, advanceWidth: item.advanceWidth, importedFromWorksheet: true }])) } }));
+  ({ ...previous, [activeCode]: [...(previous[activeCode] || []), old].slice(-50) }));
+    setProject(previous => {
+      const current = previous.glyphs[activeCode] || makeGlyph(charOf(activeCode)); let advanceWidth = current.advanceWidth;
+      if (!current.strokes?.length && !current.outlines?.length && strokes.length) { const maxX = Math.max(...strokes.flatMap(stroke => stroke.points.map(point => point.x)), 0); advanceWidth = Math.max(250, Math.min(1400, Math.round(maxX + 100))); }
+      return { ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...current, strokes, advanceWidth } } };
+    });
+    setMessage('Изменения символа сохранены.');
+  }, [activeCode, project.glyphs]);
+  const importSheetGlyphs = payload => {
+    const imported = Array.isArray(payload) ? payload : (payload?.glyphs || []);
+    if (!imported.length) { setMessage('Символы не распознаны.'); return; }
+    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, ...Object.fromEntries(imported.map(item => [item.code, { ...(previous.glyphs[item.code] || makeGlyph(item.char)), strokes: item.strokes || [], outlines: item.outlines || [], advanceWidth: item.advanceWidth, importedFromWorksheet: true }])) } }));
+    const skipped = Array.isArray(payload?.skipped) ? payload.skipped : [];
+    setMessage(`Импортированы символы: ${imported.map(item => item.char).join(' ')}.${skipped.length ? ` Пропущены: ${skipped.join(' ')}.` : ''} Просмотрите результат в библиотеке.`);
+  };
+{ ...previous, glyphs: { ...previous.glyphs, ...Object.fromEntries(imported.map(item => [item.code, { ...(previous.glyphs[item.code] || makeGlyph(item.char)), strokes: item.strokes, outlines: item.outlines, advanceWidth: item.advanceWidth, importedFromWorksheet: true }])) } }));
     setMessage(`Импортированы символы: ${imported.map(item => item.char).join(' ')}. Просмотрите результат в библиотеке.`);
   };
-  const undo = () => { const stack = history[activeCode] || []; if (!stack.length) return; const strokes = stack[stack.length - 1]; setHistory(previous => ({ ...previous, [activeCode]: stack.slice(0, -1) })); setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...(previous.glyphs[activeCode] || glyph), strokes } } })); setMessage('Последнее действие отменено.'); };
-  const eraseLast = () => { if (glyph.strokes?.length) { commitStrokes(glyph.strokes.slice(0, -1)); setMessage('Последний штрих удалён.'); } };
+  const undo = () => {
+    const stack = history[activeCode] || []; if (!stack.length) return;
+    const snapshot = stack[stack.length - 1];
+    const strokes = Array.isArray(snapshot) ? snapshot : (snapshot.strokes || []);
+    const outlines = Array.isArray(snapshot) ? undefined : (snapshot.outlines || []);
+    setHistory(previous => ({ ...previous, [activeCode]: stack.slice(0, -1) }));
+    setProject(previous => { const current = previous.glyphs[activeCode] || glyph; return { ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...current, strokes, ...(outlines !== undefined ? { outlines } : {}) } } }; });
+    setMessage('Последнее действие отменено.');
+  };
+{ const stack = history[activeCode] || []; if (!stack.length) return; const strokes = stack[stack.length - 1]; setHistory(previous => ({ ...previous, [activeCode]: stack.slice(0, -1) })); setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...(previous.glyphs[activeCode] || glyph), strokes } } })); setMessage('Последнее действие отменено.'); };
+  const eraseLast = () => {
+    if (glyph.strokes?.length) { commitStrokes(glyph.strokes.slice(0, -1)); setMessage('Последний штрих удалён.'); return; }
+    if (glyph.outlines?.length) {
+      const oldGlyph = glyph;
+      setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+      setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, outlines: glyph.outlines.slice(0, -1) } } }));
+      setMessage('Последний контур скана удалён.');
+    }
+  };
+  const clearGlyph = () => {
+    const oldGlyph = glyph;
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, strokes: [], outlines: [] } } }));
+    setMessage('Символ очищен (штрихи и скан-контуры).');
+  };{ if (glyph.strokes?.length) { commitStrokes(glyph.strokes.slice(0, -1)); setMessage('Последний штрих удалён.'); } };
   const updateMetadata = (key, value) => setProject(previous => ({ ...previous, metadata: { ...(previous.metadata || {}), [key]: value } }));
   const exportFont = style => { try { const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); } };
   const exportProject = () => downloadBlob(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${safeFilename(project.familyName)}-source.json`);
@@ -74,7 +111,13 @@ export default function App() {
     catch (error) { setMessage(`Не удалось загрузить проект: ${error.message}`); } event.target.value = '';
   };
   const reset = () => { if (!window.confirm('Очистить все нарисованные символы?')) return; setProject(previous => ({ ...previous, glyphs: Object.fromEntries(Object.entries(previous.glyphs).map(([key, item]) => [key, { ...item, strokes: [], outlines: [] }])) })); setHistory({}); setMessage('Рисунки очищены.'); };
-  const fitWidth = () => { const maxX = Math.max(...(glyph.strokes || []).flatMap(stroke => stroke.points.map(point => point.x)), 0); const width = Math.max(250, Math.min(1400, Math.round(maxX + 100))); setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, advanceWidth: width } } })); };
+  const fitWidth = () => {
+    const xs = [...(glyph.strokes || []).flatMap(stroke => stroke.points.map(point => point.x)), ...(glyph.outlines || []).flatMap(contour => contour.map(point => point.x))];
+    const maxX = Math.max(...xs, 0);
+    const width = Math.max(250, Math.min(1400, Math.round(maxX + 100)));
+    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, advanceWidth: width } } }));
+  };
+{ const maxX = Math.max(...(glyph.strokes || []).flatMap(stroke => stroke.points.map(point => point.x)), 0); const width = Math.max(250, Math.min(1400, Math.round(maxX + 100))); setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, advanceWidth: width } } })); };
   const toolLabels = { pen: '✎ Перо', eraser: '⌫ Ластик', selection: '▱ Выделение' };
 
   return <div className="app-shell">
