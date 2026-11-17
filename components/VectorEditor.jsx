@@ -1631,6 +1631,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         for (const ni of indices) {
           const n=ns[ni], prev=ns[(ni-1+len)%len], next=ns[(ni+1)%len];
           if (!n || !prev || !next) continue;
+          if (mode==='sharp') { n.smooth=false; n.hIn=null; n.hOut=null; continue; }
           const ax=prev.x-n.x, ay=prev.y-n.y, bx=next.x-n.x, by=next.y-n.y;
           const la=Math.hypot(ax,ay)||1, lb=Math.hypot(bx,by)||1;
           const cosine=(ax*bx+ay*by)/(la*lb);
