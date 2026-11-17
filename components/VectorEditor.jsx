@@ -637,7 +637,6 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         ctx.beginPath(); ctx.moveTo(X(glyph.advanceWidth || 600), 0); ctx.lineTo(X(glyph.advanceWidth || 600), rect.height); ctx.stroke();
         ctx.setLineDash([]);
       }
-      const st = stateRef.current;
       const g = gestureRef.current;
       const displayContours = o => {
         if (!g || g.objId !== o.id) return o.contours;
