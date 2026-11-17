@@ -930,7 +930,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       if (st.selNode && so.contours[st.selNode.ci] && so.contours[st.selNode.ci].nodes[st.selNode.ni]) {
         const sn = so.contours[st.selNode.ci].nodes[st.selNode.ni];
         let handleHit = null;
-        for (const w of ['hIn', 'hOut']) if (!handleHit && sn[w] && dist(p, sn[w]) < 9 * k) handleHit = w;
+        // Увеличенная зона захвата ручек удобнее для пальца на сенсорном экране.
+        for (const w of ['hIn', 'hOut']) if (!handleHit && sn[w] && dist(p, sn[w]) < 16 * k) handleHit = w;
         if (handleHit) {
           gestureRef.current = { type: 'handle', snap: snap(), objId: so.id, ci: st.selNode.ci, ni: st.selNode.ni, which: handleHit, pos: null, alt: false, moved: false,
             upd(pp, ev) { this.pos = pp; this.alt = ev.altKey; this.moved = true; } };
@@ -1310,6 +1311,21 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
+  const clearNodeHandles = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const n = ob && ob.contours[st.selNode.ci]?.nodes[st.selNode.ni];
+      if (!n) return list;
+      n.hIn = null;
+      n.hOut = null;
+      n.smooth = false;
+      return list;
+    });
+    setMessage('Кривые у выбранного узла убраны: соседние сегменты стали прямыми.');
+  };
 
   /* ===== Применение к букве ===== */
   const applyToGlyph = () => {
@@ -1501,7 +1517,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
-          <span className="ve-hint">Клик по линии — новый узел · перетаскивай узлы и рычаги Безье.</span>
+          <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
+          <span className="ve-hint">Потяни узел или круглую ручку. У гладкого узла ручки связаны; «Острый угол» позволяет менять изгибы независимо.</span>
         </>}
         {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
