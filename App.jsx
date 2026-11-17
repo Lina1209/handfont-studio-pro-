@@ -111,9 +111,50 @@ export default function App() {
   const exportFont = style => { try { const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); } };
   const exportProject = () => downloadBlob(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${safeFilename(project.familyName)}-source.json`);
   const importProject = async event => {
-    const file = event.target.files?.[0]; if (!file) return;
-    try { const parsed = JSON.parse(await file.text()); if (!parsed || typeof parsed.glyphs !== 'object' || Array.isArray(parsed.glyphs)) throw new Error('В файле не найдена библиотека символов.'); const base = defaultProject(); setProject({ ...base, ...parsed, metadata: { ...base.metadata, ...(parsed.metadata || {}) }, glyphs: { ...base.glyphs, ...parsed.glyphs } }); setHistory({}); setMessage('Проект загружен.'); }
-    catch (error) { setMessage(`Не удалось загрузить проект: ${error.message}`); } event.target.value = '';
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+          !parsed.glyphs || typeof parsed.glyphs !== 'object' || Array.isArray(parsed.glyphs)) {
+        throw new Error('В файле не найдена корректная библиотека символов.');
+      }
+      if (parsed.metadata != null && (typeof parsed.metadata !== 'object' || Array.isArray(parsed.metadata))) {
+        throw new Error('Раздел метаданных повреждён.');
+      }
+      for (const [code, item] of Object.entries(parsed.glyphs)) {
+        const number = Number(code);
+        if (!Number.isInteger(number) || number < 0 || number > 0x10ffff || (number >= 0xd800 && number <= 0xdfff)) {
+          throw new Error(`Некорректный Unicode-код символа: ${code}.`);
+        }
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          throw new Error(`Данные символа U+${number.toString(16).toUpperCase()} повреждены.`);
+        }
+        if (item.strokes != null && !Array.isArray(item.strokes)) {
+          throw new Error(`Список штрихов символа U+${number.toString(16).toUpperCase()} повреждён.`);
+        }
+        if (item.outlines != null && !Array.isArray(item.outlines)) {
+          throw new Error(`Список контуров символа U+${number.toString(16).toUpperCase()} повреждён.`);
+        }
+      }
+      const base = defaultProject();
+      const candidate = {
+        ...base,
+        ...parsed,
+        metadata: { ...base.metadata, ...(parsed.metadata || {}) },
+        glyphs: { ...base.glyphs, ...parsed.glyphs }
+      };
+      const validation = validateProject(candidate);
+      if (validation.errors.length) {
+        throw new Error(validation.errors.slice(0, 3).map(item => item.title).join('; '));
+      }
+      setProject(candidate);
+      setHistory({});
+      setMessage('Проект загружен. Проверьте предупреждения о качестве перед экспортом.');
+    } catch (error) {
+      setMessage(`Не удалось загрузить проект: ${error.message}`);
+    }
+    event.target.value = '';
   };
   const reset = () => { if (!window.confirm('Очистить все нарисованные символы?')) return; setProject(previous => ({ ...previous, glyphs: Object.fromEntries(Object.entries(previous.glyphs).map(([key, item]) => [key, { ...item, strokes: [], outlines: [] }])) })); setHistory({}); setMessage('Рисунки очищены.'); };
   const fitWidth = () => {
