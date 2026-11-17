@@ -162,6 +162,29 @@ function smoothNodes(pts, f) {
   });
 }
 
+// Смягчает только два новых края разрыва после стирания.
+// Все внутренние точки остаются на исходной геометрии.
+function softenCutEdges(pts, amount) {
+  const nodes = pts.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false }));
+  if (nodes.length < 3 || amount <= 0) return nodes;
+  const factor = Math.max(0, Math.min(100, amount)) / 100 * 0.8;
+  const firstLen = dist(nodes[0], nodes[1]) * factor;
+  const lastLen = dist(nodes[nodes.length - 2], nodes[nodes.length - 1]) * factor;
+  if (firstLen > 0.05) {
+    const dx = nodes[1].x - nodes[0].x, dy = nodes[1].y - nodes[0].y;
+    const len = Math.hypot(dx, dy) || 1;
+    nodes[0].hOut = { x: F(nodes[0].x + dx / len * firstLen), y: F(nodes[0].y + dy / len * firstLen) };
+    nodes[0].smooth = true;
+  }
+  if (lastLen > 0.05) {
+    const a = nodes[nodes.length - 2], b = nodes[nodes.length - 1];
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    b.hIn = { x: F(b.x - dx / len * lastLen), y: F(b.y - dy / len * lastLen) };
+    b.smooth = true;
+  }
+  return nodes;
+}
+
 /* ===== Трассировка растра (marching squares) ===== */
 function traceBinary(v, w, h) {
   const segs = new Map();
@@ -597,6 +620,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [showGrid, setShowGrid] = useState(false);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [eraserR, setEraserR] = useState(45);
+  const [eraserSoftness, setEraserSoftness] = useState(35);
   const [eraserMode, setEraserMode] = useState('brush');
   const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
   const [importOpen, setImportOpen] = useState(false);
@@ -621,7 +645,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, eraserMode, polygonSides, showGuides, showGrid, snapToGrid };
+  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, eraserSoftness, eraserMode, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null, freehand: [] });
   const brushRef = useRef(null);
@@ -1385,9 +1409,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           if (!inside[idx]) run.push({ x: pts[idx].x, y: pts[idx].y });
           if (inside[idx] || j === pts.length) {
             if (run.length >= 3) {
-              const nodes = smoothNodes(run, .5);
-              nodes[0].hIn = null; nodes[0].smooth = false;
-              nodes[nodes.length - 1].hOut = null; nodes[nodes.length - 1].smooth = false;
+              const nodes = softenCutEdges(run, stateRef.current.eraserSoftness);
               const cc = { nodes };
               if (Math.abs(areaStd(flattenContour(cc, 8))) > 40) keep.push(cc);
             }
@@ -2363,9 +2385,10 @@ const roundSelectedCorner = () => {
             </select>
           </label>
           {eraserMode !== 'object' && <label className="ve-range">Размер ластика<input type="range" min="6" max="200" step="2" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
+          {eraserMode === 'brush' && <label className="ve-range">Мягкость края<input type="range" min="0" max="100" step="5" value={eraserSoftness} onChange={e => setEraserSoftness(Number(e.target.value))}/><b>{eraserSoftness}%</b></label>}
           {eraserMode === 'object' && <button className="button" type="button" disabled={!sel} onClick={deleteSelectedObject}>Удалить выбранный объект</button>}
           <button className="button" type="button" disabled={!historyRef.current.u.length} onClick={undo} title="Вернуть последнее действие ластика">↶ Шаг назад</button>
-          <span className="ve-hint">{eraserMode === 'brush' ? 'Стирайте участки контура небольшими движениями.' : eraserMode === 'node' ? 'Коснитесь узла, чтобы удалить только его. Контур из трёх узлов удаляется как отдельная часть.' : 'Коснитесь объекта, затем подтвердите удаление кнопкой. Остальные объекты не затрагиваются.'} Отдельное действие можно отменить кнопкой «Шаг назад».</span>
+          <span className="ve-hint">{eraserMode === 'brush' ? 'Стирайте участки контура небольшими движениями. Мягкость действует только на новые края разрыва; 0% оставляет их острыми.' : eraserMode === 'node' ? 'Коснитесь узла, чтобы удалить только его. Контур из трёх узлов удаляется как отдельная часть.' : 'Коснитесь объекта, затем подтвердите удаление кнопкой. Остальные объекты не затрагиваются.'} Отдельное действие можно отменить кнопкой «Шаг назад».</span>
         </>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
         <span className="ve-flex"/>
