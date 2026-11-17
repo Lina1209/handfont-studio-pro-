@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { Fragment, useEffect, useRef, useState, useCallback } from 'react';
 import * as opentypeModule from 'opentype.js';
 import { METRICS } from '../lib/project.js';
 import { strokeToContours } from '../lib/geometry.js';
@@ -1562,10 +1562,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           {['hIn','hOut'].map((which) => {
             const hp = handlePolar(activeNode, which);
             const label = which === 'hIn' ? 'Вход' : 'Выход';
-            return <React.Fragment key={which}>
+            return <Fragment key={which}>
               <label title={label + ': длина ручки'}>{label} L<input key={st.selNode ? st.selNode.ci+'-'+st.selNode.ni+'-'+which+'-l-'+hp.length+'-'+hp.angle : which+'-l'} type="number" min="0" max="2000" step="1" defaultValue={hp.length} disabled={!activeNode || !activeNode[which]} onBlur={e => setHandlePolar(which,'length',e.target.value)}/></label>
               <label title={label + ': угол ручки'}>°<input key={st.selNode ? st.selNode.ci+'-'+st.selNode.ni+'-'+which+'-a-'+hp.length+'-'+hp.angle : which+'-a'} type="number" step="1" defaultValue={hp.angle} disabled={!activeNode || !activeNode[which]} onBlur={e => setHandlePolar(which,'angle',e.target.value)}/></label>
-            </React.Fragment>;
+            </Fragment>;
           })}
           <span className="ve-hint">Перетаскивай ручки или задавай их длину и угол числами. У гладкого узла противоположная ручка сохраняет направление.</span>
         </>}
