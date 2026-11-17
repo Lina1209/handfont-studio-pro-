@@ -1543,10 +1543,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       const ob = list.find(x => x.id === so.id);
       const ns = ob?.contours[ci]?.nodes;
       if (!ns || !ns[ni]) return list;
-      const a = ns[(ni - 1 + ns.length) % ns.length];
-      a.hOut = { ...c1 };
-      const first = { x: tIn.x, y: tIn.y, smooth: false, hIn: null, hOut: null };
-      const second = { x: tOut.x, y: tOut.y, smooth: false, hIn: { ...c2 }, hOut: null };
+      const first = { x: tIn.x, y: tIn.y, smooth: true, hIn: null, hOut: { ...c1 } };
+      const second = { x: tOut.x, y: tOut.y, smooth: true, hIn: { ...c2 }, hOut: null };
       ns.splice(ni, 1, first, second);
       return list;
     });
