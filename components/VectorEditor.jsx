@@ -1339,6 +1339,34 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     });
     setMessage('Кривые у выбранного узла убраны: соседние сегменты стали прямыми.');
   };
+  const setHandlePolar = (which, dimension, value) => {
+    const so = getObj();
+    const st = stateRef.current;
+    const v = Number(value);
+    if (!so || !st.selNode || !Number.isFinite(v)) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const n = ob && ob.contours[st.selNode.ci]?.nodes[st.selNode.ni];
+      if (!n || !n[which]) return list;
+      const other = which === 'hIn' ? 'hOut' : 'hIn';
+      const dx = n[which].x - n.x, dy = n[which].y - n.y;
+      let len = Math.hypot(dx, dy), angle = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (dimension === 'length') len = Math.max(0, Math.min(2000, v));
+      else angle = v;
+      const rad = angle * Math.PI / 180;
+      n[which] = { x: F(n.x + Math.cos(rad) * len), y: F(n.y + Math.sin(rad) * len) };
+      if (n.smooth) {
+        const otherLen = n[other] ? Math.hypot(n[other].x - n.x, n[other].y - n.y) : len;
+        n[other] = { x: F(n.x - Math.cos(rad) * otherLen), y: F(n.y - Math.sin(rad) * otherLen) };
+      }
+      return list;
+    });
+  };
+  const handlePolar = (node, which) => {
+    if (!node || !node[which]) return { length: '', angle: '' };
+    const dx = node[which].x - node.x, dy = node[which].y - node.y;
+    return { length: Math.round(Math.hypot(dx, dy)), angle: Math.round(Math.atan2(dy, dx) * 180 / Math.PI) };
+  };
 
   /* ===== Применение к букве ===== */
   const applyToGlyph = () => {
@@ -1531,7 +1559,15 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
-          <span className="ve-hint">Потяни узел или круглую ручку. У гладкого узла ручки связаны; «Острый угол» позволяет менять изгибы независимо.</span>
+          {['hIn','hOut'].map((which) => {
+            const hp = handlePolar(activeNode, which);
+            const label = which === 'hIn' ? 'Вход' : 'Выход';
+            return <React.Fragment key={which}>
+              <label title={label + ': длина ручки'}>{label} L<input key={st.selNode ? st.selNode.ci+'-'+st.selNode.ni+'-'+which+'-l-'+hp.length+'-'+hp.angle : which+'-l'} type="number" min="0" max="2000" step="1" value={hp.length} disabled={!activeNode || !activeNode[which]} onChange={e => setHandlePolar(which,'length',e.target.value)}/></label>
+              <label title={label + ': угол ручки'}>°<input key={st.selNode ? st.selNode.ci+'-'+st.selNode.ni+'-'+which+'-a-'+hp.length+'-'+hp.angle : which+'-a'} type="number" step="1" value={hp.angle} disabled={!activeNode || !activeNode[which]} onChange={e => setHandlePolar(which,'angle',e.target.value)}/></label>
+            </React.Fragment>;
+          })}
+          <span className="ve-hint">Перетаскивай ручки или задавай их длину и угол числами. У гладкого узла противоположная ручка сохраняет направление.</span>
         </>}
         {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
