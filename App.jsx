@@ -116,10 +116,13 @@ export default function App() {
   };
   const reset = () => { if (!window.confirm('Очистить все нарисованные символы?')) return; setProject(previous => ({ ...previous, glyphs: Object.fromEntries(Object.entries(previous.glyphs).map(([key, item]) => [key, { ...item, strokes: [], outlines: [] }])) })); setHistory({}); setMessage('Рисунки очищены.'); };
   const fitWidth = () => {
-    const xs = [...(glyph.strokes || []).flatMap(stroke => stroke.points.map(point => point.x)), ...(glyph.outlines || []).flatMap(contour => contour.map(point => point.x))];
-    const maxX = Math.max(...xs, 0);
-    const width = Math.max(250, Math.min(1400, Math.round(maxX + 100)));
+    const xs = [...(glyph.strokes || []).flatMap(stroke => (stroke.points || []).map(point => point.x)), ...(glyph.outlines || []).flatMap(contour => contour.map(point => point.x))];
+    if (!xs.length) { setMessage('Сначала нарисуйте или импортируйте символ.'); return; }
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const width = Math.max(250, Math.min(1400, Math.round(maxX - Math.min(0, minX) + 100)));
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: glyph.strokes || [], outlines: glyph.outlines || [], advanceWidth: glyph.advanceWidth }].slice(-50) }));
     setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, advanceWidth: width } } }));
+    setMessage('Ширина символа подогнана. Действие можно отменить.');
   };
   const toolLabels = { pen: '✎ Перо', eraser: '⌫ Ластик', selection: '▱ Выделение' };
 
