@@ -570,7 +570,25 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [penStyle, setPenStyle] = useState('solid');
   const [penSpacing, setPenSpacing] = useState(58);
   const [penStampSize, setPenStampSize] = useState(24);
-  const [customPens, setCustomPens] = useState([]);
+  const [customPens, setCustomPens] = useState(() => {
+    try {
+      if (typeof window === 'undefined') return [];
+      const saved = JSON.parse(window.localStorage.getItem('handfont-custom-pens-v1') || '[]');
+      if (!Array.isArray(saved)) return [];
+      return saved.filter(p => p && typeof p.id === 'string' && typeof p.name === 'string' &&
+        Array.isArray(p.contours) && p.contours.every(c => Array.isArray(c) &&
+          c.every(pt => Number.isFinite(pt?.x) && Number.isFinite(pt?.y))))
+        .slice(0, 50);
+    } catch { return []; }
+  });
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined')
+        window.localStorage.setItem('handfont-custom-pens-v1', JSON.stringify(customPens.slice(0, 50)));
+    } catch {
+      setMessage('Не удалось сохранить библиотеку перьев: возможно, в памяти браузера недостаточно места.');
+    }
+  }, [customPens]);
   const [cornerPreview, setCornerPreview] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
@@ -1219,9 +1237,16 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
     const cx=(minX+maxX)/2,cy=(minY+maxY)/2,span=Math.max(maxX-minX,maxY-minY,1);
     const contours=all.map(poly=>poly.map(p=>({x:(p.x-cx)/span,y:(p.y-cy)/span})));
+    if (customPens.length >= 50) { setMessage('Библиотека заполнена (50 перьев). Удалите ненужное перо, чтобы добавить новое.'); return; }
     const item={id:'custom_'+uid(),name:'Моё перо '+(customPens.length+1),contours};
     setCustomPens(prev=>[...prev,item]);setPenStyle(item.id);setPenMode('freehand');
     setMessage('Собственное перо сохранено. Теперь ведите пальцем по холсту, чтобы повторять узор вдоль линии.');
+  }
+  function deleteSelectedCustomPen() {
+    if (!customPens.some(p => p.id === penStyle)) return;
+    setCustomPens(prev => prev.filter(p => p.id !== penStyle));
+    setPenStyle('solid');
+    setMessage('Пользовательское перо удалено из библиотеки.');
   }
   function finishPen() {
     const pen = penRef.current;
@@ -2228,6 +2253,7 @@ const roundSelectedCorner = () => {
           </select></label>
           <label>Вид пера<select value={penStyle} onChange={e=>setPenStyle(e.target.value)}>{PEN_STYLES.map(([v,label])=><option key={v} value={v}>{label}</option>)}{customPens.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
           <button className="button" type="button" disabled={!getObj()} onClick={saveCustomPen}>＋ Сохранить выделенный рисунок как перо</button>
+          {customPens.some(p=>p.id===penStyle) && <button className="button" type="button" onClick={deleteSelectedCustomPen}>Удалить выбранное моё перо</button>}
           {penMode==='freehand' && <label className="ve-range">Толщина<input type="range" min="8" max="180" value={brushWidth} onChange={e=>setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
           {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||['dots','dash','longdash','dashdot'].includes(penStyle)) && <label className="ve-range">Интервал<input type="range" min="12" max="180" value={penSpacing} onChange={e=>setPenSpacing(Number(e.target.value))}/><b>{penSpacing}</b></label>}
           {penMode==='freehand' && (PEN_MOTIFS.includes(penStyle)||customPens.some(p=>p.id===penStyle)) && <label className="ve-range">Размер узора<input type="range" min="8" max="90" value={penStampSize} onChange={e=>setPenStampSize(Number(e.target.value))}/><b>{penStampSize}</b></label>}
