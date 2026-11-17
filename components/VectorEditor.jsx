@@ -496,6 +496,7 @@ const TOOL_DEFS = [
 export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const canvasRef = useRef(null);
   const activePointerId = useRef(null);
+  const pointersRef = useRef(new Map());
   const [objects, setObjects] = useState(() => {
     const list = [];
     for (const stroke of Array.isArray(glyph.strokes) ? glyph.strokes : []) {
@@ -664,6 +665,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       const displayContours = o => {
         if (!g || g.objId !== o.id) return o.contours;
         if (g.type === 'transform' && g.map) return mapContours(o.contours, g.map);
+        if (g.type === 'nodeTransform' && g.transformed) {
+          const transformed = new Map(g.transformed.map(item => [item.ci + ':' + item.ni, item.node]));
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => {
+            const item = transformed.get(ci + ':' + ni);
+            return item ? { ...clone(item) } : n;
+          }) }));
+        }
         if (g.type === 'node' && g.moved) {
           const d = g.delta;
           const selected = new Set((g.nodes || [{ ci: g.ci, ni: g.ni }]).map(q => q.ci + ':' + q.ni));
@@ -858,6 +866,16 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       const ob = list.find(x => x.id === g.objId);
       if (!ob) return list;
       if (g.type === 'transform' && g.map) ob.contours = mapContours(ob.contours, g.map);
+      if (g.type === 'nodeTransform' && g.transformed) {
+        for (const item of g.transformed) {
+          const nn = ob.contours[item.ci]?.nodes[item.ni];
+          if (!nn) continue;
+          nn.x = F(item.node.x); nn.y = F(item.node.y);
+          nn.hIn = item.node.hIn ? { x: F(item.node.hIn.x), y: F(item.node.hIn.y) } : null;
+          nn.hOut = item.node.hOut ? { x: F(item.node.hOut.x), y: F(item.node.hOut.y) } : null;
+          nn.smooth = item.node.smooth;
+        }
+      }
       if (g.type === 'node') {
         const targets = g.nodes || [{ ci: g.ci, ni: g.ni }];
         for (const target of targets) {
@@ -1124,11 +1142,60 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
 
   /* ===== События указателя ===== */
   const onPointerDown = e => {
-    if (importOpenRef.current || activePointerId.current !== null) return;
+    if (importOpenRef.current) return;
     e.preventDefault();
+    const raw = posFromEvent(e);
+    if (activePointerId.current !== null) {
+      const currentGesture = gestureRef.current;
+      const stNow = stateRef.current;
+      const refs = (stNow.selectedNodes || []).filter(q => Number.isInteger(q.ci) && Number.isInteger(q.ni));
+      const so = getObj();
+      if (stNow.tool === 'node' && currentGesture?.type === 'node' && refs.length >= 2 && so && so.id === currentGesture.objId && pointersRef.current.size === 1) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        pointersRef.current.set(e.pointerId, raw);
+        const firstId = pointersRef.current.keys().next().value;
+        const first = pointersRef.current.get(firstId);
+        const initialCenter = { x: (first.x + raw.x) / 2, y: (first.y + raw.y) / 2 };
+        const initialDistance = Math.max(0.001, dist(first, raw));
+        const initialAngle = Math.atan2(raw.y - first.y, raw.x - first.x);
+        const source = refs.map(q => ({ ci: q.ci, ni: q.ni, node: clone(so.contours[q.ci]?.nodes[q.ni]) })).filter(q => q.node);
+        if (source.length >= 2) {
+          gestureRef.current = {
+            type: 'nodeTransform', snap: currentGesture.snap, objId: so.id, refs,
+            initialCenter, initialDistance, initialAngle, source, transformed: [], moved: false,
+            updTransform() {
+              const pts = Array.from(pointersRef.current.values());
+              if (pts.length < 2) return;
+              const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+              const scale = Math.max(0.02, Math.min(50, dist(pts[0], pts[1]) / this.initialDistance));
+              const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x) - this.initialAngle;
+              const cs = Math.cos(angle), sn = Math.sin(angle);
+              this.transformed = this.source.map(item => {
+                const transformPoint = p => {
+                  if (!p) return null;
+                  const dx = (p.x - this.initialCenter.x) * scale;
+                  const dy = (p.y - this.initialCenter.y) * scale;
+                  return { x: F(center.x + dx * cs - dy * sn), y: F(center.y + dx * sn + dy * cs) };
+                };
+                const node = item.node;
+                return { ci: item.ci, ni: item.ni, node: {
+                  ...node, ...transformPoint(node),
+                  hIn: transformPoint(node.hIn), hOut: transformPoint(node.hOut)
+                } };
+              });
+              this.moved = true;
+            }
+          };
+          gestureRef.current.updTransform();
+          rerender();
+        }
+      }
+      return;
+    }
     activePointerId.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const raw = posFromEvent(e);
+    pointersRef.current.clear();
+    pointersRef.current.set(e.pointerId, raw);
     const st = stateRef.current;
     const p = st.snapToGrid ? { x: Math.round(raw.x / 100) * 100, y: Math.round(raw.y / 100) * 100 } : raw;
     const now = performance.now();
@@ -1168,7 +1235,19 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     else if (st.tool === 'node') nodeDown(p, e, dbl);
   };
   const onPointerMove = e => {
-    if (importOpenRef.current || activePointerId.current !== e.pointerId) return;
+    if (importOpenRef.current) return;
+    if (pointersRef.current.has(e.pointerId)) {
+      const rawPointer = posFromEvent(e);
+      pointersRef.current.set(e.pointerId, rawPointer);
+      const multiGesture = gestureRef.current;
+      if (multiGesture?.type === 'nodeTransform') {
+        e.preventDefault();
+        multiGesture.updTransform();
+        rerender();
+        return;
+      }
+      if (activePointerId.current !== e.pointerId) return;
+    } else if (activePointerId.current !== e.pointerId) return;
     const raw = posFromEvent(e);
     const st = stateRef.current;
     const p = st.snapToGrid ? { x: Math.round(raw.x / 100) * 100, y: Math.round(raw.y / 100) * 100 } : raw;
@@ -1196,6 +1275,19 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     rerender();
   };
   const onPointerUp = e => {
+    const multiGesture = gestureRef.current;
+    if (multiGesture?.type === 'nodeTransform' && pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, posFromEvent(e));
+      if (pointersRef.current.size >= 2) multiGesture.updTransform();
+      pointersRef.current.delete(e.pointerId);
+      if (pointersRef.current.size > 0) { rerender(); return; }
+      gestureRef.current = null;
+      activePointerId.current = null;
+      bakeGesture(multiGesture);
+      setMessage('Группа узлов масштабирована и повёрнута двумя пальцами.');
+      rerender();
+      return;
+    }
     if (activePointerId.current !== e.pointerId) return;
     // Учитываем последнюю координату pointerup: палец может сдвинуться
     // между последним pointermove и отпусканием.
@@ -1212,6 +1304,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       if (!last || dist(last, endPoint) > 1) pts.push(endPoint);
     }
     activePointerId.current = null;
+    pointersRef.current.delete(e.pointerId);
     gestureRef.current = null;
     if (g) {
       if (g.type === 'shape') {
