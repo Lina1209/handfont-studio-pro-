@@ -1278,6 +1278,21 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
+  const setSelectedNodeCoord = (axis, value) => {
+    const st = stateRef.current;
+    const so = getObj();
+    const v = Number(value);
+    if (!so || !st.selNode || !Number.isFinite(v)) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const n = ob && ob.contours[st.selNode.ci]?.nodes[st.selNode.ni];
+      if (!n) return list;
+      const delta = v - n[axis];
+      n[axis] = F(v);
+      for (const h of ['hIn', 'hOut']) if (n[h]) n[h][axis] = F(n[h][axis] + delta);
+      return list;
+    });
+  };
   const toggleSmoothSel = () => {
     const so = getObj();
     const st = stateRef.current;
@@ -1449,6 +1464,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
 
   const bb = selBBox();
   const st = stateRef.current;
+  const activeNode = st.selNode ? st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes[st.selNode.ni] : null;
   const setTool = t => { setToolState(t); penRef.current.nodes = []; brushRef.current = null; eraserPosRef.current = null; rerender(); };
 
   return <div className="ve-overlay">
@@ -1480,10 +1496,12 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button danger" disabled={!bb} onClick={deleteSel} title="Удалить (Delete)">🗑</button>
         </>}
         {tool === 'node' && <>
+          <label>X<input type="number" step="1" value={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onChange={e => setSelectedNodeCoord('x', e.target.value)}/></label>
+          <label>Y<input type="number" step="1" value={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onChange={e => setSelectedNodeCoord('y', e.target.value)}/></label>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
-          <button className="button" disabled={!st.selNode} onClick={toggleSmoothSel} title="Угол/гладкий (или двойной клик по узлу)">◇/◆</button>
-          <span className="ve-hint">клик по линии — новый узел · тяни узлы и рычаги · Alt+рычаг — излом</span>
+          <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
+          <span className="ve-hint">Клик по линии — новый узел · перетаскивай узлы и рычаги Безье.</span>
         </>}
         {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
