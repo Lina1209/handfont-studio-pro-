@@ -1,94 +1,3003 @@
-import { downloadBlob, safeFilename } from './font.js';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import * as opentypeModule from 'opentype.js';
+import { METRICS } from '../lib/project.js';
+import { strokeToContours } from '../lib/geometry.js';
 
-/* Конвертер TTF -> WOFF (стандарт W3C) через встроенный CompressionStream. */
-async function deflateBytes(bytes) {
-  if (typeof CompressionStream === 'undefined') return bytes;
-  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));
-  const buffer = await new Response(stream).arrayBuffer();
-  return new Uint8Array(buffer);
+const opentype = opentypeModule.default ?? opentypeModule;
+
+/* ===== Геометрия (координаты шрифта: y вверх, базовая линия y=0) ===== */
+const VIEW0 = { xMin: -60, xMax: 940, yMin: -260, yMax: 840 };
+const F = n => Math.round(n * 10) / 10;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+const clone = o => JSON.parse(JSON.stringify(o));
+let uidCounter = 1;
+const uid = () => 'o' + (uidCounter++) + '_' + Date.now().toString(36);
+
+function cubicAt(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  return {
+    x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
+    y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y
+  };
 }
-const pad4 = n => (n + 3) & ~3;
+function segCtrl(a, b) {
+  if (!a.hOut && !b.hIn) return null;
+  return [a.hOut || { x: a.x, y: a.y }, b.hIn || { x: b.x, y: b.y }];
+}
+function flattenContour(c, step = 6) {
+  const ns = c.nodes, n = ns.length, pts = [];
+  if (n < 2) return pts;
+  pts.push({ x: ns[0].x, y: ns[0].y, seg: 0, t: 0 });
+  for (let i = 0; i < n; i++) {
+    const a = ns[i], b = ns[(i + 1) % n];
+    const A = { x: a.x, y: a.y }, B = { x: b.x, y: b.y };
+    const cv = segCtrl(a, b);
+    if (cv) {
+      const L = dist(A, cv[0]) + dist(cv[0], cv[1]) + dist(cv[1], B);
+      const k = Math.max(4, Math.min(48, Math.ceil(L / step)));
+      for (let j = 1; j <= k; j++) {
+        const p = cubicAt(A, cv[0], cv[1], B, j / k);
+        pts.push({ x: p.x, y: p.y, seg: i, t: j / k });
+      }
+    } else pts.push({ x: B.x, y: B.y, seg: (i + 1) % n, t: 0 });
+  }
+  pts.pop();
+  return pts;
+}
+function areaStd(pts) {
+  let s = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) s += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+  return s / 2;
+}
+function pointInPoly(p, pts) {
+  let ins = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) ins = !ins;
+  }
+  return ins;
+}
+function windingAt(p, pts) {
+  let w = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i];
+    const cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (a.y <= p.y) { if (b.y > p.y && cr > 0) w++; }
+    else { if (b.y <= p.y && cr < 0) w--; }
+  }
+  return w;
+}
+function reverseContour(c) {
+  c.nodes.reverse();
+  for (const n of c.nodes) { const t = n.hIn; n.hIn = n.hOut; n.hOut = t; }
+}
+// Внешний контур TTF (y вверх): по часовой => площадь < 0. Дырки — наоборот.
+function normalizeObject(obj) {
+  const flats = obj.contours.map(c => flattenContour(c, 8));
+  for (let i = 0; i < obj.contours.length; i++) {
+    if (flats[i].length < 3) continue;
+    let depth = 0;
+    for (let j = 0; j < obj.contours.length; j++)
+      if (j !== i && flats[j].length > 2 && pointInPoly(flats[i][0], flats[j])) depth++;
+    const want = depth % 2 === 0 ? -1 : 1;
+    const a = areaStd(flats[i]);
+    if (a !== 0 && Math.sign(a) !== want) reverseContour(obj.contours[i]);
+  }
+}
+function bboxOfContours(cs) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const c of cs) for (const p of flattenContour(c, 6)) {
+    if (p.x < x1) x1 = p.x;
+    if (p.x > x2) x2 = p.x;
+    if (p.y < y1) y1 = p.y;
+    if (p.y > y2) y2 = p.y;
+  }
+  if (x1 > x2) return null;
+  return { x: x1, y: y1, x2, y2, w: Math.max(x2 - x1, .001), h: Math.max(y2 - y1, .001), cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
+}
+function mapNode(n, f) {
+  const p = f({ x: n.x, y: n.y });
+  return { x: p.x, y: p.y, smooth: n.smooth, hIn: n.hIn ? f(n.hIn) : null, hOut: n.hOut ? f(n.hOut) : null };
+}
+const mapContours = (cs, f) => cs.map(c => ({ nodes: c.nodes.map(n => mapNode(n, f)) }));
+const mT = (tx, ty) => [1, 0, 0, 1, tx, ty];
+const mR = a => [Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0];
+function mMul(A, B) {
+  return [A[0]*B[0]+A[2]*B[1], A[1]*B[0]+A[3]*B[1], A[0]*B[2]+A[2]*B[3], A[1]*B[2]+A[3]*B[3], A[0]*B[4]+A[2]*B[5]+A[4], A[1]*B[4]+A[3]*B[5]+A[5]];
+}
+const mApply = (m, p) => ({ x: m[0]*p.x + m[2]*p.y + m[4], y: m[1]*p.x + m[3]*p.y + m[5] });
+const around = (c, M) => mMul(mT(c.x, c.y), mMul(M, mT(-c.x, -c.y)));
 
-export async function ttfToWoff(ttfBuffer) {
-  const ttf = new Uint8Array(ttfBuffer);
-  const view = new DataView(ttf.buffer, ttf.byteOffset, ttf.byteLength);
-  const flavor = view.getUint32(0);
-  const numTables = view.getUint16(4);
-  const entries = [];
-  let totalSfntSize = 12 + 16 * numTables;
-  for (let i = 0; i < numTables; i++) {
-    const at = 12 + i * 16;
-    const tag = ttf.slice(at, at + 4);
-    const checksum = view.getUint32(at + 4);
-    const offset = view.getUint32(at + 8);
-    const length = view.getUint32(at + 12);
-    entries.push({ tag, checksum, offset, length });
-    totalSfntSize += pad4(length);
+function perpDist(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const L = Math.hypot(dx, dy);
+  if (L < 1e-9) return dist(p, a);
+  return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / L;
+}
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  let dmax = 0, idx = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = perpDist(pts[i], pts[0], pts[pts.length - 1]);
+    if (d > dmax) { dmax = d; idx = i; }
   }
-  const compressed = [];
-  for (const entry of entries) {
-    const data = ttf.slice(entry.offset, entry.offset + entry.length);
-    let comp = await deflateBytes(data);
-    if (comp.length >= data.length) comp = data;
-    compressed.push({ ...entry, comp, origLength: entry.length });
+  if (dmax > eps) {
+    const l = rdp(pts.slice(0, idx + 1), eps), r = rdp(pts.slice(idx), eps);
+    return l.slice(0, -1).concat(r);
   }
-  const dataStart = 44 + 20 * numTables;
-  let totalLength = dataStart;
-  for (const item of compressed) totalLength += pad4(item.comp.length);
-  const out = new Uint8Array(totalLength);
-  const ov = new DataView(out.buffer);
-  out.set([0x77, 0x4f, 0x46, 0x46], 0); // wOFF
-  ov.setUint32(4, flavor);
-  ov.setUint32(8, totalLength);
-  ov.setUint16(12, numTables);
-  ov.setUint16(14, 0);
-  ov.setUint32(16, totalSfntSize);
-  ov.setUint16(20, 1);
-  ov.setUint16(22, 0);
-  let cursor = dataStart;
-  compressed.forEach((item, i) => {
-    const at = 44 + i * 20;
-    out.set(item.tag, at);
-    ov.setUint32(at + 4, cursor);
-    ov.setUint32(at + 8, item.comp.length);
-    ov.setUint32(at + 12, item.origLength);
-    ov.setUint32(at + 16, item.checksum);
-    out.set(item.comp, cursor);
-    cursor += pad4(item.comp.length);
+  return [pts[0], pts[pts.length - 1]];
+}
+function simplifyClosed(pts, eps) {
+  if (pts.length < 5) return pts;
+  let far = 1, fd = -1;
+  for (let i = 1; i < pts.length; i++) {
+    const d = dist(pts[i], pts[0]);
+    if (d > fd) { fd = d; far = i; }
+  }
+  const s1 = rdp(pts.slice(0, far + 1), eps);
+  const s2 = rdp(pts.slice(far).concat([pts[0]]), eps);
+  return s1.slice(0, -1).concat(s2.slice(0, -1));
+}
+function smoothNodes(pts, f) {
+  const n = pts.length, k = f / 4;
+  return pts.map((p, i) => {
+    const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
+    if (f <= 0 || n < 3) return { x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false };
+    const tx = (next.x - prev.x) * k, ty = (next.y - prev.y) * k;
+    return { x: F(p.x), y: F(p.y), smooth: true, hIn: { x: F(p.x - tx), y: F(p.y - ty) }, hOut: { x: F(p.x + tx), y: F(p.y + ty) } };
   });
-  return out;
 }
 
-export function supportsWoff() { return typeof CompressionStream !== 'undefined'; }
-
-/* Экспорт одного начертания в выбранном формате. font — объект opentype.Font. */
-export async function exportFontFile(font, familyName, styleName, format) {
-  const base = `${safeFilename(familyName)}-${styleName.toLowerCase().replace(/\s+/g, '-')}`;
-  const ttf = font.toArrayBuffer();
-  if (format === 'woff') {
-    if (!supportsWoff()) throw new Error('Этот браузер не поддерживает создание WOFF. Обновите браузер или скачайте TTF.');
-    const woff = await ttfToWoff(ttf);
-    downloadBlob(new Blob([woff], { type: 'font/woff' }), `${base}.woff`);
-    return;
-  }
-  downloadBlob(new Blob([ttf], { type: 'font/ttf' }), `${base}.ttf`);
-}
-
-/* Полный пакет: все начертания x (TTF + WOFF), лицензия, исходник, образец, метаданные. */
-export async function buildDistributionFiles(project, buildFont, styles, extras) {
-  const files = [];
-  for (const style of styles) {
-    const font = buildFont(project, style);
-    const base = `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\s+/g, '-')}`;
-    const ttf = font.toArrayBuffer();
-    files.push({ name: `fonts/ttf/${base}.ttf`, data: ttf });
-    if (supportsWoff()) {
-      try {
-        const woff = await ttfToWoff(ttf);
-        files.push({ name: `fonts/woff/${base}.woff`, data: woff });
-      } catch (error) { /* WOFF необязателен — TTF уже в пакете */ }
+/* ===== Трассировка растра (marching squares) ===== */
+function traceBinary(v, w, h) {
+  const segs = new Map();
+  const key = (x, y) => x + '_' + y;
+  const add = (a, b) => {
+    const k = key(a[0], a[1]);
+    if (!segs.has(k)) segs.set(k, []);
+    segs.get(k).push(b);
+  };
+  const V = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? 0 : v[y * w + x];
+  for (let y = -1; y < h; y++) for (let x = -1; x < w; x++) {
+    const idx = V(x, y) * 8 + V(x + 1, y) * 4 + V(x + 1, y + 1) * 2 + V(x, y + 1);
+    if (idx === 0 || idx === 15) continue;
+    const N = [x + .5, y], E = [x + 1, y + .5], S = [x + .5, y + 1], W = [x, y + .5];
+    switch (idx) {
+      case 1: add(S, W); break;
+      case 2: add(E, S); break;
+      case 3: add(E, W); break;
+      case 4: add(N, E); break;
+      case 5: add(N, E); add(S, W); break;
+      case 6: add(N, S); break;
+      case 7: add(N, W); break;
+      case 8: add(W, N); break;
+      case 9: add(S, N); break;
+      case 10: add(W, N); add(E, S); break;
+      case 11: add(E, N); break;
+      case 12: add(W, E); break;
+      case 13: add(S, E); break;
+      case 14: add(W, S); break;
     }
   }
-  for (const extra of extras) files.push(extra);
-  return files;
-                                   }
+  const loops = [];
+  segs.forEach((list, k) => {
+    while (list.length) {
+      const start = k.split('_').map(Number);
+      const loop = [start];
+      let next = list.pop(), guard = 2000000, ok = false;
+      while (guard--) {
+        loop.push(next);
+        const nk = key(next[0], next[1]);
+        if (nk === k) { ok = true; break; }
+        const l2 = segs.get(nk);
+        if (!l2 || !l2.length) break;
+        next = l2.pop();
+      }
+      if (ok && loop.length > 3) { loop.pop(); loops.push(loop.map(p => ({ x: p[0], y: p[1] }))); }
+    }
+  });
+  return loops;
+}
+function bitmapLoops(data, w, h, thr, invert) {
+  const v = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const a = data[i * 4 + 3];
+    const lum = .299 * data[i * 4] + .587 * data[i * 4 + 1] + .114 * data[i * 4 + 2];
+    let ink = a >= 128 && lum < thr;
+    if (invert) ink = a >= 128 && lum >= thr;
+    v[i] = ink ? 1 : 0;
+  }
+  return traceBinary(v, w, h);
+}
+function loopsToContours(loops, tol, smoothF) {
+  const cs = [];
+  for (const lp of loops) {
+    const simp = simplifyClosed(lp, tol);
+    if (simp.length < 3) continue;
+    const c = { nodes: smoothNodes(simp, smoothF) };
+    if (Math.abs(areaStd(flattenContour(c, 6))) < 30) continue;
+    cs.push(c);
+  }
+  return cs;
+}
+function fitContoursToGlyph(cs, isLower) {
+  const bb = bboxOfContours(cs);
+  if (!bb) return cs;
+  const targetH = isLower ? METRICS.xHeight : METRICS.capHeight;
+  const s = targetH / bb.h;
+  return mapContours(cs, p => ({ x: 450 + (p.x - bb.cx) * s, y: (p.y - bb.y) * s }));
+}
+
+/* ===== Импорт: символ из системного шрифта ===== */
+function symbolFromSystem(ch, family, weight, italic) {
+  const isLower = ch.toLowerCase() === ch && ch.toUpperCase() !== ch;
+  const cv = document.createElement('canvas');
+  cv.width = 480; cv.height = 480;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 480, 480);
+  ctx.fillStyle = '#000';
+  ctx.font = `${italic ? 'italic ' : ''}${weight} 300px "${family}"`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const capAsc = ctx.measureText('H').actualBoundingBoxAscent || 210;
+  const xAsc = ctx.measureText('x').actualBoundingBoxAscent || 150;
+  const target = isLower ? METRICS.xHeight : METRICS.capHeight;
+  const s = target / (isLower ? xAsc : capAsc);
+  ctx.fillText(ch, 240, 330);
+  const loops = bitmapLoops(ctx.getImageData(0, 0, 480, 480).data, 480, 480, 128, false);
+  if (!loops.length) throw new Error('Символ не отрисовался.');
+  const mapped = loops.map(lp => lp.map(p => ({ x: 450 + (p.x - 240) * s, y: (330 - p.y) * s })));
+  return loopsToContours(mapped, 1.2, .6);
+}
+
+/* ===== Импорт: точный контур из TTF/OTF ===== */
+function otPathToContours(path, map) {
+  const cs = [];
+  let cur = null, prev = null;
+  for (const c of path.commands) {
+    if (c.type === 'M') {
+      cur = { nodes: [] }; cs.push(cur);
+      const p = map(c.x, c.y);
+      cur.nodes.push({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false });
+      prev = p;
+    } else if (c.type === 'L' && cur) {
+      const p = map(c.x, c.y);
+      cur.nodes.push({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false });
+      prev = p;
+    } else if (c.type === 'Q' && cur) {
+      const q = map(c.x1, c.y1), p = map(c.x, c.y);
+      const last = cur.nodes[cur.nodes.length - 1];
+      last.hOut = { x: F(prev.x + (q.x - prev.x) * 2 / 3), y: F(prev.y + (q.y - prev.y) * 2 / 3) };
+      last.smooth = true;
+      cur.nodes.push({ x: F(p.x), y: F(p.y), smooth: true, hOut: null, hIn: { x: F(p.x + (q.x - p.x) * 2 / 3), y: F(p.y + (q.y - p.y) * 2 / 3) } });
+      prev = p;
+    } else if (c.type === 'C' && cur) {
+      const c1 = map(c.x1, c.y1), c2 = map(c.x2, c.y2), p = map(c.x, c.y);
+      const last = cur.nodes[cur.nodes.length - 1];
+      last.hOut = { x: F(c1.x), y: F(c1.y) };
+      last.smooth = true;
+      cur.nodes.push({ x: F(p.x), y: F(p.y), smooth: true, hOut: null, hIn: { x: F(c2.x), y: F(c2.y) } });
+      prev = p;
+    } else if (c.type === 'Z' && cur) {
+      if (cur.nodes.length > 1) {
+        const fN = cur.nodes[0], lN = cur.nodes[cur.nodes.length - 1];
+        if (Math.hypot(fN.x - lN.x, fN.y - lN.y) < .05) { fN.hIn = lN.hIn; cur.nodes.pop(); }
+      }
+      cur = null;
+    }
+  }
+  return cs.filter(c => c.nodes.length >= 3);
+}
+function symbolFromFontFile(font, ch) {
+  const isLower = ch.toLowerCase() === ch && ch.toUpperCase() !== ch;
+  const glyph = font.charToGlyph(ch);
+  if (!glyph || glyph.index === 0) throw new Error(`В этом шрифте нет символа «${ch}».`);
+  const gb = glyph.path.getBoundingBox();
+  if (!isFinite(gb.x1)) throw new Error('Пустой контур символа.');
+  const upm = font.unitsPerEm || 1000;
+  const os2 = font.tables && font.tables.os2;
+  const capH = (os2 && os2.sCapHeight) || font.ascender * .9 || upm * .7;
+  const xH = (os2 && os2.sxHeight) || upm * .5;
+  const s = (isLower ? METRICS.xHeight : METRICS.capHeight) / (isLower ? xH : capH);
+  const cx = (gb.x1 + gb.x2) / 2;
+  return otPathToContours(glyph.path, (x, y) => ({ x: 450 + (x - cx) * s, y: y * s }));
+}
+
+/* ===== Импорт: PNG/JPG ===== */
+function contoursFromImage(source, threshold, invert, simplify, smoothF, isLower) {
+  const loops = bitmapLoops(source.data, source.w, source.h, threshold, invert);
+  if (!loops.length) return [];
+  const flipped = loops.map(lp => lp.map(p => ({ x: p.x, y: source.h - p.y })));
+  const cs = loopsToContours(flipped, simplify, smoothF);
+  return fitContoursToGlyph(cs, isLower);
+}
+
+/* ===== Импорт: SVG ===== */
+function shapeToD(elm) {
+  const g = n => Number(elm.getAttribute(n) || 0);
+  const tag = elm.tagName.toLowerCase();
+  if (tag === 'path') return elm.getAttribute('d') || '';
+  if (tag === 'rect') {
+    const x = g('x'), y = g('y'), w = g('width'), h = g('height');
+    let rx = g('rx') || g('ry'), ry = g('ry') || g('rx');
+    rx = Math.min(rx, w / 2); ry = Math.min(ry, h / 2);
+    if (rx > 0) return `M ${x + rx} ${y} H ${x + w - rx} A ${rx} ${ry} 0 0 1 ${x + w} ${y + ry} V ${y + h - ry} A ${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h} H ${x + rx} A ${rx} ${ry} 0 0 1 ${x} ${y + h - ry} V ${y + ry} A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`;
+    return `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
+  }
+  if (tag === 'circle') {
+    const cx = g('cx'), cy = g('cy'), r = g('r');
+    return `M ${cx - r} ${cy} A ${r} ${r} 0 1 0 ${cx + r} ${cy} A ${r} ${r} 0 1 0 ${cx - r} ${cy} Z`;
+  }
+  if (tag === 'ellipse') {
+    const cx = g('cx'), cy = g('cy'), rx = g('rx'), ry = g('ry');
+    return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`;
+  }
+  if (tag === 'line') return `M ${g('x1')} ${g('y1')} L ${g('x2')} ${g('y2')}`;
+  if (tag === 'polyline' || tag === 'polygon') {
+    const nums = (elm.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number);
+    let d = '';
+    for (let i = 0; i + 1 < nums.length; i += 2) d += (i ? ' L ' : 'M ') + nums[i] + ' ' + nums[i + 1];
+    return d + (tag === 'polygon' ? ' Z' : '');
+  }
+  return '';
+}
+function ribbonPoly(pts, w) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const L = [], R = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l * w / 2, ny = dx / l * w / 2;
+    L.push({ x: pts[i].x + nx, y: pts[i].y + ny });
+    R.push({ x: pts[i].x - nx, y: pts[i].y - ny });
+  }
+  return L.concat(R.reverse());
+}
+function contoursFromSvg(text, tol, smoothF, isLower) {
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  const root = doc.documentElement;
+  if (!root || root.tagName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) throw new Error('Не удалось разобрать SVG.');
+  const holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:10px;height:10px;overflow:hidden;visibility:hidden;';
+  const svgClone = document.importNode(root, true);
+  svgClone.removeAttribute('viewBox');
+  svgClone.setAttribute('width', '10000');
+  svgClone.setAttribute('height', '10000');
+  holder.appendChild(svgClone);
+  document.body.appendChild(holder);
+  const raw = [];
+  try {
+    const shapes = svgClone.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon');
+    for (const sh of shapes) {
+      const d = shapeToD(sh);
+      if (!d) continue;
+      let pEl = sh;
+      if (sh.tagName.toLowerCase() !== 'path') {
+        const pe = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        for (let ai = 0; ai < sh.attributes.length; ai++) { const at = sh.attributes[ai]; pe.setAttribute(at.name, at.value); }
+        pe.setAttribute('d', d);
+        sh.replaceWith(pe);
+        pEl = pe;
+      }
+      const L = pEl.getTotalLength();
+      if (!isFinite(L) || L < .5) continue;
+      const ctm = pEl.getCTM() || { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+      const sc = Math.sqrt(Math.abs(ctm.a * ctm.d - ctm.b * ctm.c)) || 1;
+      const nSamp = Math.min(2500, Math.max(24, Math.ceil(L / 1.5)));
+      const step = L / nSamp;
+      const sty = getComputedStyle(pEl);
+      const fillNone = sty.fill === 'none' || sty.fillOpacity === '0';
+      const strokeOn = sty.stroke && sty.stroke !== 'none' && parseFloat(sty.strokeWidth) > 0;
+      const sw = strokeOn ? parseFloat(sty.strokeWidth) : 0;
+      let cur = [], prev = null;
+      const parts = [];
+      for (let j = 0; j <= nSamp; j++) {
+        const pt = pEl.getPointAtLength(j * step);
+        const mp = { x: ctm.a * pt.x + ctm.c * pt.y + ctm.e, y: ctm.b * pt.x + ctm.d * pt.y + ctm.f };
+        if (prev && dist(mp, prev) > step * sc * 6) { if (cur.length > 1) parts.push(cur); cur = []; }
+        cur.push(mp); prev = mp;
+      }
+      if (cur.length > 1) parts.push(cur);
+      for (const pts of parts) {
+        const closed = dist(pts[0], pts[pts.length - 1]) < step * sc * 2.5;
+        if (!fillNone || closed || !strokeOn) raw.push({ pts, open: false, sw: 0 });
+        else raw.push({ pts, open: true, sw: sw * sc });
+      }
+    }
+  } finally { holder.remove(); }
+  if (!raw.length) throw new Error('В SVG не найдено контуров.');
+  const flip = p => ({ x: p.x, y: -p.y });
+  const cs = [];
+  for (const r of raw) {
+    const pts = r.pts.map(flip);
+    if (r.open) {
+      const rib = ribbonPoly(pts, Math.max(1, r.sw));
+      if (rib.length < 3) continue;
+      cs.push({ nodes: smoothNodes(rib, Math.min(smoothF, .4)) });
+    } else {
+      const simp = simplifyClosed(pts, tol);
+      if (simp.length < 3) continue;
+      cs.push({ nodes: smoothNodes(simp, smoothF) });
+    }
+  }
+  const filtered = cs.filter(c => Math.abs(areaStd(flattenContour(c, 6))) > 20);
+  return fitContoursToGlyph(filtered, isLower);
+}
+
+/* ===== Узоры ===== */
+function patternContours(kind, size) {
+  const S = size || 500, cx = 450, cy = 350;
+  const poly = pts => ({ nodes: pts.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })) });
+  const circle = (r, n = 48) => Array.from({ length: n }, (_, i) => { const a = i / n * Math.PI * 2; return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+  const star = (rO, rI, spikes) => Array.from({ length: spikes * 2 }, (_, i) => { const a = i / (spikes * 2) * Math.PI * 2 - Math.PI / 2; const r = i % 2 ? rI : rO; return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+  if (kind === 'star5') return [poly(star(S / 2, S / 4.6, 5))];
+  if (kind === 'star8') return [poly(star(S / 2, S / 3.4, 8))];
+  if (kind === 'ring') return [poly(circle(S / 2)), poly(circle(S / 3.1))];
+  if (kind === 'flower') {
+    const pts = Array.from({ length: 120 }, (_, i) => { const a = i / 120 * Math.PI * 2; const r = S / 2 * (0.62 + 0.38 * Math.cos(a * 6)); return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+    return [{ nodes: smoothNodes(pts, .8) }];
+  }
+  if (kind === 'heart') {
+    const pts = Array.from({ length: 100 }, (_, i) => {
+      const t = i / 100 * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+      return { x: cx + x * S / 34, y: cy + y * S / 34 };
+    });
+    return [{ nodes: smoothNodes(pts, .8) }];
+  }
+  if (kind === 'diamond') return [poly([{ x: cx, y: cy + S / 2 }, { x: cx + S / 3, y: cy }, { x: cx, y: cy - S / 2 }, { x: cx - S / 3, y: cy }])];
+  if (kind === 'wave') {
+    const top = Array.from({ length: 60 }, (_, i) => ({ x: 100 + i * 12, y: cy + 90 + Math.sin(i / 60 * Math.PI * 4) * 70 }));
+    const bottom = top.map(p => ({ x: p.x, y: p.y - 130 })).reverse();
+    return [{ nodes: smoothNodes(top.concat(bottom), .6) }];
+  }
+  if (kind === 'zigzag') {
+    const top = Array.from({ length: 13 }, (_, i) => ({ x: 90 + i * 60, y: cy + 100 + (i % 2 ? -80 : 80) }));
+    const bottom = top.map(p => ({ x: p.x, y: p.y - 150 })).reverse();
+    return [poly(top.concat(bottom))];
+  }
+  return [];
+}
+
+const FAMILIES = ['Georgia', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Impact', 'Comic Sans MS', 'Trebuchet MS', 'Palatino Linotype', 'Segoe Script', 'Brush Script MT', 'cursive', 'serif', 'sans-serif', 'monospace'];
+const PATTERNS = [['star5', '★ Звезда 5'], ['star8', '✦ Звезда 8'], ['ring', '◎ Кольцо'], ['flower', '✿ Цветок'], ['heart', '♥ Сердце'], ['diamond', '◆ Ромб'], ['wave', '〜 Волна'], ['zigzag', '⩘ Зигзаг']];
+const TOOL_DEFS = [
+  ['select', 'V', 'Выбор / трансформация'],
+  ['node', 'N', 'Узлы и кривые'],
+  ['pen', 'P', 'Перо Безье'],
+  ['brush', 'B', 'Кисть (штрих)'],
+  ['eraser', 'E', 'Ластик'],
+  ['hand', 'H', 'Рука (панорама)']
+];
+
+export default function VectorEditor({ char, glyph, onApply, onClose }) {
+  const canvasRef = useRef(null);
+  const [objects, setObjects] = useState(() => {
+    const list = [];
+    for (const contour of glyph.outlines || []) {
+      if (Array.isArray(contour) && contour.length >= 3) {
+        list.push({ id: uid(), contours: [{ nodes: contour.map(p => ({ x: p.x, y: p.y, hIn: null, hOut: null, smooth: false })) }] });
+      }
+    }
+    return list;
+  });
+  const [tool, setToolState] = useState('select');
+  const [sel, setSel] = useState(null);
+  const [selMode, setSelMode] = useState('scale');
+  const [selNode, setSelNode] = useState(null);
+  const [view, setView] = useState({ ...VIEW0 });
+  const [brushWidth, setBrushWidth] = useState(60);
+  const [eraserR, setEraserR] = useState(45);
+  const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importTab, setImportTab] = useState('pattern');
+  const [symChar, setSymChar] = useState(char === ' ' ? 'A' : char);
+  const [symFamily, setSymFamily] = useState('Georgia');
+  const [symWeight, setSymWeight] = useState('400');
+  const [symItalic, setSymItalic] = useState(false);
+  const [loadedFont, setLoadedFont] = useState(null);
+  const [loadedFontName, setLoadedFontName] = useState('');
+  const [pngSource, setPngSource] = useState(null);
+  const [pngThr, setPngThr] = useState(128);
+  const [pngInvert, setPngInvert] = useState(false);
+  const [pngSimplify, setPngSimplify] = useState(1.6);
+  const [pngSmooth, setPngSmooth] = useState(0.7);
+  const [svgText, setSvgText] = useState('');
+  const [svgTol, setSvgTol] = useState(1.2);
+  const [svgSmooth, setSvgSmooth] = useState(0.5);
+  const [patternKind, setPatternKind] = useState('star5');
+  const [patternSize, setPatternSize] = useState(520);
+  const [previewContours, setPreviewContours] = useState(null);
+  const [, forceRender] = useState(0);
+
+  const stateRef = useRef({});
+  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR };
+  const gestureRef = useRef(null);
+  const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
+  const brushRef = useRef(null);
+  const historyRef = useRef({ u: [], r: [] });
+  const spaceRef = useRef(false);
+  const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
+  const eraserPosRef = useRef(null);
+  const importOpenRef = useRef(false);
+  importOpenRef.current = importOpen;
+
+  const isLower = char.toLowerCase() === char && char.toUpperCase() !== char;
+  const snap = () => clone(stateRef.current.objects);
+  const pushHistory = s => { historyRef.current.u.push(s); if (historyRef.current.u.length > 60) historyRef.current.u.shift(); historyRef.current.r = []; };
+  const rerender = () => forceRender(v => v + 1);
+
+  const commit = useCallback((mutator, snapshot) => {
+    const s = snapshot || clone(stateRef.current.objects);
+    let next = clone(stateRef.current.objects);
+    if (mutator) next = mutator(next) || next;
+    for (const o of next) normalizeObject(o);
+    pushHistory(s);
+    setObjects(next);
+    setMessage('Изменено. «Применить» запишет результат в букву ' + (char === ' ' ? '(пробел)' : char) + '.');
+  }, [char]);
+
+  const undo = () => {
+    const h = historyRef.current;
+    if (!h.u.length) return;
+    h.r.push(clone(stateRef.current.objects));
+    setObjects(h.u.pop());
+    setSel(null); setSelNode(null);
+    rerender();
+  };
+  const redo = () => {
+    const h = historyRef.current;
+    if (!h.r.length) return;
+    h.u.push(clone(stateRef.current.objects));
+    setObjects(h.r.pop());
+    setSel(null); setSelNode(null);
+    rerender();
+  };
+
+  const getObj = list => (list || stateRef.current.objects).find(o => o.id === stateRef.current.sel) || null;
+
+  const posFromEvent = e => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const v = stateRef.current.view;
+    const scale = rect.height / (v.yMax - v.yMin);
+    return { x: (e.clientX - rect.left) / scale + v.xMin, y: v.yMax - (e.clientY - rect.top) / scale };
+  };
+
+  /* ===== Отрисовка ===== */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const v = stateRef.current.view;
+      const scale = rect.height / (v.yMax - v.yMin);
+      const X = x => (x - v.xMin) * scale, Y = y => (v.yMax - y) * scale;
+      ctx.fillStyle = '#111318'; ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = '#171a21';
+      ctx.fillRect(X(0), Y(METRICS.ascender), 900 * scale, (METRICS.ascender - METRICS.descender) * scale);
+      for (const [y, color, label] of [[METRICS.ascender, '#3b82f6', 'верхняя (800)'], [METRICS.capHeight, '#6366f1', 'прописные (700)'], [METRICS.xHeight, '#8b5cf6', 'строчные (500)'], [0, '#22c55e', 'БАЗОВАЯ ЛИНИЯ (0)'], [METRICS.descender, '#ef4444', 'нижняя (-200)']]) {
+        ctx.strokeStyle = color; ctx.lineWidth = y === 0 ? 1.6 : 1;
+        ctx.beginPath(); ctx.moveTo(0, Y(y)); ctx.lineTo(rect.width, Y(y)); ctx.stroke();
+        ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.fillText(label, 8, Y(y) - 4);
+      }
+      ctx.strokeStyle = '#3a3f4b'; ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(0), 0); ctx.lineTo(X(0), rect.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(glyph.advanceWidth || 600), 0); ctx.lineTo(X(glyph.advanceWidth || 600), rect.height); ctx.stroke();
+      ctx.setLineDash([]);
+      const st = stateRef.current;
+      const g = gestureRef.current;
+      const displayContours = o => {
+        if (!g || g.objId !== o.id) return o.contours;
+        if (g.type === 'transform' && g.map) return mapContours(o.contours, g.map);
+        if (g.type === 'node' && g.moved) {
+          const d = g.delta;
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => ci === g.ci && ni === g.ni ? { x: n.x + d.x, y: n.y + d.y, smooth: n.smooth, hIn: n.hIn ? { x: n.hIn.x + d.x, y: n.hIn.y + d.y } : null, hOut: n.hOut ? { x: n.hOut.x + d.x, y: n.hOut.y + d.y } : null } : n) }));
+        }
+        if (g.type === 'handle' && g.pos) {
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => { if (ci !== g.ci || ni !== g.ni) return n; const cp = clone(n); cp[g.which] = { x: g.pos.x, y: g.pos.y }; return cp; }) }));
+        }
+        return o.contours;
+      };
+      const tracePath = c => {
+        const ns = c.nodes, n = ns.length;
+        if (n < 2) return;
+        ctx.moveTo(X(ns[0].x), Y(ns[0].y));
+        for (let i = 0; i < n; i++) {
+          const a = ns[i], b = ns[(i + 1) % n];
+          const cv = segCtrl(a, b);
+          if (cv) ctx.bezierCurveTo(X(cv[0].x), Y(cv[0].y), X(cv[1].x), Y(cv[1].y), X(b.x), Y(b.y));
+          else ctx.lineTo(X(b.x), Y(b.y));
+        }
+        ctx.closePath();
+      };
+      for (const o of st.objects) {
+        ctx.fillStyle = o.id === st.sel ? '#efe9dc' : '#d9d4c8';
+        ctx.beginPath();
+        for (const c of displayContours(o)) tracePath(c);
+        ctx.fill('nonzero');
+      }
+      if (brushRef.current && brushRef.current.length) {
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = Math.max(1, st.brushWidth * scale); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(X(brushRef.current[0].x), Y(brushRef.current[0].y));
+        for (const p of brushRef.current.slice(1)) ctx.lineTo(X(p.x), Y(p.y));
+        ctx.stroke();
+      }
+      const pen = penRef.current;
+      if (st.tool === 'pen' && pen.nodes.length) {
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(X(pen.nodes[0].x), Y(pen.nodes[0].y));
+        for (let i = 1; i < pen.nodes.length; i++) {
+          const a = pen.nodes[i - 1], b = pen.nodes[i], cv = segCtrl(a, b);
+          if (cv) ctx.bezierCurveTo(X(cv[0].x), Y(cv[0].y), X(cv[1].x), Y(cv[1].y), X(b.x), Y(b.y));
+          else ctx.lineTo(X(b.x), Y(b.y));
+        }
+        if (pen.cursor && !pen.dragging) ctx.lineTo(X(pen.cursor.x), Y(pen.cursor.y));
+        ctx.stroke();
+        pen.nodes.forEach((n, i) => {
+          ctx.fillStyle = i === 0 ? '#8ea2ff' : '#fff';
+          ctx.fillRect(X(n.x) - 4, Y(n.y) - 4, 8, 8);
+          ctx.strokeStyle = '#4f46e5'; ctx.strokeRect(X(n.x) - 4, Y(n.y) - 4, 8, 8);
+        });
+      }
+      const so = st.objects.find(o => o.id === st.sel);
+      if (st.tool === 'select' && so) {
+        const bb = bboxOfContours(displayContours(so));
+        if (bb) {
+          ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1.2; ctx.setLineDash([6, 4]);
+          ctx.strokeRect(X(bb.x), Y(bb.y2), bb.w * scale, bb.h * scale);
+          ctx.setLineDash([]);
+          for (const [name, hx, hy] of handlePts(bb)) {
+            const sx = X(hx), sy = Y(hy);
+            ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 1.4;
+            if (st.selMode === 'scale') { ctx.fillRect(sx - 4.5, sy - 4.5, 9, 9); ctx.strokeRect(sx - 4.5, sy - 4.5, 9, 9); }
+            else if (name.length === 2) { ctx.beginPath(); ctx.arc(sx, sy, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+            else { ctx.beginPath(); ctx.moveTo(sx, sy - 5.5); ctx.lineTo(sx + 5.5, sy); ctx.lineTo(sx, sy + 5.5); ctx.lineTo(sx - 5.5, sy); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+          }
+          if (st.selMode === 'rotate') {
+            ctx.fillStyle = '#4f46e5';
+            ctx.beginPath(); ctx.arc(X(bb.cx), Y(bb.cy), 3, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+      if (st.tool === 'node' && so) {
+        const cs = displayContours(so);
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1;
+        cs.forEach((c, ci) => {
+          ctx.beginPath(); tracePath(c); ctx.stroke();
+          c.nodes.forEach((n, ni) => {
+            const active = st.selNode && st.selNode.ci === ci && st.selNode.ni === ni;
+            if (active) {
+              for (const w of ['hIn', 'hOut']) if (n[w]) {
+                ctx.strokeStyle = '#9aa3b5'; ctx.beginPath(); ctx.moveTo(X(n.x), Y(n.y)); ctx.lineTo(X(n[w].x), Y(n[w].y)); ctx.stroke();
+                ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4f46e5';
+                ctx.beginPath(); ctx.arc(X(n[w].x), Y(n[w].y), 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+              }
+            }
+            ctx.fillStyle = active ? '#4f46e5' : '#fff';
+            ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 1.1;
+            ctx.fillRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
+            ctx.strokeRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
+          });
+        });
+      }
+      if (st.tool === 'eraser' && eraserPosRef.current) {
+        ctx.strokeStyle = '#ff8585'; ctx.fillStyle = 'rgba(255,133,133,.08)'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(X(eraserPosRef.current.x), Y(eraserPosRef.current.y), st.eraserR * scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+    };
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  });
+
+  /* ===== Попадания ===== */
+  function handlePts(bb) {
+    return [['nw', bb.x, bb.y2], ['n', bb.cx, bb.y2], ['ne', bb.x2, bb.y2], ['e', bb.x2, bb.cy], ['se', bb.x2, bb.y], ['s', bb.cx, bb.y], ['sw', bb.x, bb.y], ['w', bb.x, bb.cy]];
+  }
+  const screenK = () => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return (stateRef.current.view.yMax - stateRef.current.view.yMin) / Math.max(1, rect.height);
+  };
+  function hitHandle(p, bb, k) {
+    for (const [name, hx, hy] of handlePts(bb)) if (Math.abs(p.x - hx) < 9 * k && Math.abs(p.y - hy) < 9 * k) return name;
+    return null;
+  }
+  function hitObject(p, k) {
+    const list = stateRef.current.objects;
+    for (let i = list.length - 1; i >= 0; i--) {
+      let w = 0, near = false;
+      for (const c of list[i].contours) {
+        const f = flattenContour(c, 8);
+        w += windingAt(p, f);
+        if (!near) for (const q of f) { const dx = q.x - p.x, dy = q.y - p.y; if (dx * dx + dy * dy < 16 * k * k) { near = true; break; } }
+      }
+      if (w !== 0 || near) return list[i];
+    }
+    return null;
+  }
+  function hitNode(o, p, r) {
+    for (let ci = 0; ci < o.contours.length; ci++) {
+      const ns = o.contours[ci].nodes;
+      for (let ni = 0; ni < ns.length; ni++) if (Math.abs(p.x - ns[ni].x) < r && Math.abs(p.y - ns[ni].y) < r) return { ci, ni };
+    }
+    return null;
+  }
+  function hitSegment(o, p, tol) {
+    let best = null, bd = tol * tol;
+    o.contours.forEach((c, ci) => {
+      for (const q of flattenContour(c, 5)) {
+        const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+        if (d < bd) { bd = d; best = { ci, seg: q.seg, t: q.t }; }
+      }
+    });
+    return best;
+  }
+  function insertNodeAt(o, at) {
+    const c = o.contours[at.ci], ns = c.nodes, len = ns.length;
+    const a = ns[at.seg], b = ns[(at.seg + 1) % len], t = at.t;
+    const cv = segCtrl(a, b);
+    let nn;
+    if (cv) {
+      const p0 = { x: a.x, y: a.y }, p3 = { x: b.x, y: b.y };
+      const p01 = lerp(p0, cv[0], t), p12 = lerp(cv[0], cv[1], t), p23 = lerp(cv[1], p3, t);
+      const p012 = lerp(p01, p12, t), p123 = lerp(p12, p23, t), m = lerp(p012, p123, t);
+      a.hOut = { x: F(p01.x), y: F(p01.y) };
+      b.hIn = { x: F(p23.x), y: F(p23.y) };
+      nn = { x: F(m.x), y: F(m.y), smooth: true, hIn: { x: F(p012.x), y: F(p012.y) }, hOut: { x: F(p123.x), y: F(p123.y) } };
+    } else {
+      const m = lerp(a, b, t);
+      nn = { x: F(m.x), y: F(m.y), smooth: false, hIn: null, hOut: null };
+    }
+    ns.splice(at.seg + 1, 0, nn);
+    return { ci: at.ci, ni: at.seg + 1 };
+  }
+
+  /* ===== Жесты ===== */
+  const clampAbs = (v, m) => Math.abs(v) < m ? (v < 0 ? -m : m) : v;
+  function bakeGesture(g) {
+    if (!g.moved) return;
+    commit(list => {
+      const ob = list.find(x => x.id === g.objId);
+      if (!ob) return list;
+      if (g.type === 'transform' && g.map) ob.contours = mapContours(ob.contours, g.map);
+      if (g.type === 'node') {
+        const nn = ob.contours[g.ci] && ob.contours[g.ci].nodes[g.ni];
+        if (nn) {
+          nn.x = F(nn.x + g.delta.x); nn.y = F(nn.y + g.delta.y);
+          if (nn.hIn) { nn.hIn.x = F(nn.hIn.x + g.delta.x); nn.hIn.y = F(nn.hIn.y + g.delta.y); }
+          if (nn.hOut) { nn.hOut.x = F(nn.hOut.x + g.delta.x); nn.hOut.y = F(nn.hOut.y + g.delta.y); }
+        }
+      }
+      if (g.type === 'handle' && g.pos) {
+        const nn = ob.contours[g.ci] && ob.contours[g.ci].nodes[g.ni];
+        if (nn) {
+          nn[g.which] = { x: F(g.pos.x), y: F(g.pos.y) };
+          if (nn.smooth && !g.alt) {
+            const other = g.which === 'hIn' ? 'hOut' : 'hIn';
+            const dx = nn.x - g.pos.x, dy = nn.y - g.pos.y;
+            const L = Math.hypot(dx, dy) || 1;
+            const len = nn[other] ? Math.hypot(nn[other].x - nn.x, nn[other].y - nn.y) : L;
+            nn[other] = { x: F(nn.x + dx / L * len), y: F(nn.y + dy / L * len) };
+          }
+        }
+      }
+      return list;
+    }, g.snap);
+  }
+  function startTransform(o, fn) {
+    gestureRef.current = { type: 'transform', snap: snap(), objId: o.id, map: null, moved: false,
+      upd(p, e) { this.map = fn(p, e); this.moved = true; } };
+  }
+  function makeScaleFn(bb, h, p0) {
+    const ax = h.includes('w') ? bb.x2 : h.includes('e') ? bb.x : bb.cx;
+    const ay = h.includes('n') ? bb.y : h.includes('s') ? bb.y2 : bb.cy;
+    const axisX = h.length === 2 || h === 'e' || h === 'w';
+    const axisY = h.length === 2 || h === 'n' || h === 's';
+    const s0x = (p0.x - ax) || .001, s0y = (p0.y - ay) || .001;
+    return (p, e) => {
+      let sx = axisX ? (p.x - ax) / s0x : 1;
+      let sy = axisY ? (p.y - ay) / s0y : 1;
+      if (e.shiftKey && axisX && axisY) { const m = Math.max(Math.abs(sx), Math.abs(sy)); sx = m * (sx < 0 ? -1 : 1); sy = m * (sy < 0 ? -1 : 1); }
+      sx = clampAbs(sx, .02); sy = clampAbs(sy, .02);
+      return q => ({ x: ax + (q.x - ax) * sx, y: ay + (q.y - ay) * sy });
+    };
+  }
+  function selectDown(p, e) {
+    const k = screenK();
+    const so = getObj();
+    if (so) {
+      const bb = bboxOfContours(so.contours);
+      if (bb) {
+        const h = hitHandle(p, bb, k);
+        if (h) {
+          const st = stateRef.current;
+          if (st.selMode === 'scale') startTransform(so, makeScaleFn(bb, h, p));
+          else if (h.length === 2) {
+            if (e.altKey) {
+              const corners = [{ x: bb.x, y: bb.y2 }, { x: bb.x2, y: bb.y2 }, { x: bb.x2, y: bb.y }, { x: bb.x, y: bb.y }];
+              const idx = { nw: 0, ne: 1, se: 2, sw: 3 }[h];
+              startTransform(so, pp => {
+                const cs = corners.slice(); cs[idx] = { x: pp.x, y: pp.y };
+                return q => {
+                  const u = (q.x - bb.x) / bb.w, v = (q.y - bb.y) / bb.h;
+                  return {
+                    x: (1-u)*v*cs[0].x + u*v*cs[1].x + u*(1-v)*cs[2].x + (1-u)*(1-v)*cs[3].x,
+                    y: (1-u)*v*cs[0].y + u*v*cs[1].y + u*(1-v)*cs[2].y + (1-u)*(1-v)*cs[3].y
+                  };
+                };
+              });
+            } else {
+              const c = { x: bb.cx, y: bb.cy }, a0 = Math.atan2(p.y - c.y, p.x - c.x);
+              startTransform(so, (pp, ev) => {
+                let d = Math.atan2(pp.y - c.y, pp.x - c.x) - a0;
+                if (ev.shiftKey) d = Math.round(d / (Math.PI / 12)) * (Math.PI / 12);
+                const M = around(c, mR(d));
+                return q => mApply(M, q);
+              });
+            }
+          } else {
+            const c = { x: bb.cx, y: bb.cy };
+            const horiz = h === 'n' || h === 's';
+            startTransform(so, pp => {
+              let kx = 0, ky = 0;
+              if (horiz) kx = Math.max(-2.5, Math.min(2.5, (pp.x - p.x) / (bb.h / 2)));
+              else ky = Math.max(-2.5, Math.min(2.5, (pp.y - p.y) / (bb.w / 2)));
+              const M = around(c, [1, ky, kx, 1, 0, 0]);
+              return q => mApply(M, q);
+            });
+          }
+          return;
+        }
+      }
+    }
+    const hit = hitObject(p, k);
+    if (hit) {
+      const wasSel = stateRef.current.sel === hit.id;
+      if (!wasSel) { setSel(hit.id); setSelMode('scale'); setSelNode(null); }
+      gestureRef.current = { type: 'moveOrToggle', snap: snap(), objId: hit.id, start: p, moved: false, map: null, toggle: wasSel,
+        upd(pp) {
+          if (dist(pp, this.start) > 3 * k) this.moved = true;
+          if (this.moved) { const dx = pp.x - this.start.x, dy = pp.y - this.start.y; this.map = q => ({ x: q.x + dx, y: q.y + dy }); }
+        } };
+      rerender();
+    } else { setSel(null); setSelNode(null); rerender(); }
+  }
+  function nodeDown(p, e, dbl) {
+    const k = screenK();
+    const so = getObj();
+    if (so) {
+      const st = stateRef.current;
+      if (st.selNode && so.contours[st.selNode.ci] && so.contours[st.selNode.ci].nodes[st.selNode.ni]) {
+        const sn = so.contours[st.selNode.ci].nodes[st.selNode.ni];
+        let handleHit = null;
+        for (const w of ['hIn', 'hOut']) if (!handleHit && sn[w] && dist(p, sn[w]) < 9 * k) handleHit = w;
+        if (handleHit) {
+          gestureRef.current = { type: 'handle', snap: snap(), objId: so.id, ci: st.selNode.ci, ni: st.selNode.ni, which: handleHit, pos: null, alt: false, moved: false,
+            upd(pp, ev) { this.pos = pp; this.alt = ev.altKey; this.moved = true; } };
+          return;
+        }
+      }
+      const nh = hitNode(so, p, 9 * k);
+      if (nh) {
+        if (dbl && st.selNode && st.selNode.ci === nh.ci && st.selNode.ni === nh.ni) {
+          commit(list => {
+            const ob = list.find(x => x.id === so.id);
+            const ns = ob.contours[nh.ci].nodes, n = ns[nh.ni], len = ns.length;
+            n.smooth = !n.smooth;
+            if (n.smooth) {
+              const prev = ns[(nh.ni - 1 + len) % len], next = ns[(nh.ni + 1) % len];
+              const tx = (next.x - prev.x) / 5, ty = (next.y - prev.y) / 5;
+              n.hOut = { x: F(n.x + tx), y: F(n.y + ty) };
+              n.hIn = { x: F(n.x - tx), y: F(n.y - ty) };
+            }
+            return list;
+          });
+          return;
+        }
+        setSelNode(nh);
+        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, ci: nh.ci, ni: nh.ni, start: p, delta: { x: 0, y: 0 }, moved: false,
+          upd(pp) { this.delta = { x: pp.x - this.start.x, y: pp.y - this.start.y }; this.moved = Math.hypot(this.delta.x, this.delta.y) > .5; } };
+        rerender();
+        return;
+      }
+      const sh = hitSegment(so, p, 7 * k);
+      if (sh) {
+        if (sh.t < .1 || sh.t > .9) {
+          const len = so.contours[sh.ci].nodes.length;
+          setSelNode({ ci: sh.ci, ni: (sh.seg + (sh.t > .5 ? 1 : 0)) % len });
+          rerender();
+          return;
+        }
+        let inserted = null;
+        commit(list => {
+          const ob = list.find(x => x.id === so.id);
+          inserted = insertNodeAt(ob, sh);
+          return list;
+        });
+        setSelNode(inserted);
+        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, ci: inserted.ci, ni: inserted.ni, start: p, delta: { x: 0, y: 0 }, moved: false,
+          upd(pp) { this.delta = { x: pp.x - this.start.x, y: pp.y - this.start.y }; this.moved = Math.hypot(this.delta.x, this.delta.y) > .5; } };
+        return;
+      }
+    }
+    const hit = hitObject(p, k);
+    if (hit) { setSel(hit.id); setSelNode(null); rerender(); }
+  }
+
+  /* ===== Перо / кисть / ластик ===== */
+  function finishPen() {
+    const pen = penRef.current;
+    if (pen.nodes.length >= 3) {
+      const nodes = pen.nodes;
+      commit(list => {
+        const target = list.find(o => o.id === stateRef.current.sel);
+        if (target) target.contours.push({ nodes });
+        else { const no = { id: uid(), contours: [{ nodes }] }; list.push(no); setSel(no.id); }
+        return list;
+      });
+    }
+    pen.nodes = []; pen.dragging = false; pen.dragNode = null;
+    rerender();
+  }
+  function penDown(p, dbl) {
+    const k = screenK();
+    const pen = penRef.current;
+    if (dbl) { finishPen(); return; }
+    if (pen.nodes.length >= 3 && dist(p, pen.nodes[0]) < 12 * k) { finishPen(); return; }
+    const n = { x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false };
+    pen.nodes.push(n); pen.dragging = true; pen.dragNode = n;
+    rerender();
+  }
+  function endBrush() {
+    const pts = brushRef.current;
+    brushRef.current = null;
+    if (pts && pts.length > 1) {
+      const contours = strokeToContours(pts, stateRef.current.brushWidth / 2);
+      commit(list => {
+        const cs = contours.map(c => ({ nodes: c.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })) }));
+        const target = list.find(o => o.id === stateRef.current.sel);
+        if (target) target.contours.push(...cs);
+        else { const no = { id: uid(), contours: cs }; list.push(no); setSel(no.id); }
+        return list;
+      });
+    }
+    rerender();
+  }
+  function eraseAt(p) {
+    const r2 = stateRef.current.eraserR ** 2;
+    let changed = false;
+    const list = stateRef.current.objects;
+    for (let oi = list.length - 1; oi >= 0; oi--) {
+      const o = list[oi], keep = [];
+      let touched = false;
+      for (const c of o.contours) {
+        const pts = flattenContour(c, 5);
+        if (pts.length < 3) { keep.push(c); continue; }
+        const inside = pts.map(q => (q.x - p.x) ** 2 + (q.y - p.y) ** 2 < r2);
+        const any = inside.some(Boolean);
+        if (!any) { keep.push(c); continue; }
+        touched = true;
+        if (inside.every(Boolean)) continue;
+        const start = inside.indexOf(true);
+        let run = [];
+        for (let j = 1; j <= pts.length; j++) {
+          const idx = (start + j) % pts.length;
+          if (!inside[idx]) run.push({ x: pts[idx].x, y: pts[idx].y });
+          if (inside[idx] || j === pts.length) {
+            if (run.length >= 3) {
+              const nodes = smoothNodes(run, .5);
+              nodes[0].hIn = null; nodes[0].smooth = false;
+              nodes[nodes.length - 1].hOut = null; nodes[nodes.length - 1].smooth = false;
+              const cc = { nodes };
+              if (Math.abs(areaStd(flattenContour(cc, 8))) > 40) keep.push(cc);
+            }
+            run = [];
+          }
+        }
+      }
+      if (touched) {
+        changed = true;
+        o.contours = keep;
+        if (!keep.length) { list.splice(oi, 1); if (stateRef.current.sel === o.id) { setSel(null); setSelNode(null); } }
+      }
+    }
+    return changed;
+  }
+
+  /* ===== События указателя ===== */
+  const onPointerDown = e => {
+    if (importOpenRef.current) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = posFromEvent(e);
+    const now = performance.now();
+    const lt = lastTapRef.current;
+    const dbl = now - lt.t < 350 && Math.hypot(p.x - lt.x, p.y - lt.y) < 14 * screenK();
+    lastTapRef.current = { t: now, x: p.x, y: p.y };
+    const st = stateRef.current;
+    if (st.tool === 'hand' || spaceRef.current || e.button === 1) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      gestureRef.current = { type: 'pan', v0: { ...st.view }, sx: e.clientX, sy: e.clientY, rectH: rect.height,
+        upd(pp, ev) {
+          const scale = this.rectH / (this.v0.yMax - this.v0.yMin);
+          setView({ ...this.v0, xMin: this.v0.xMin - (ev.clientX - this.sx) / scale, yMin: this.v0.yMin + (ev.clientY - this.sy) / scale, xMax: this.v0.xMax - (ev.clientX - this.sx) / scale, yMax: this.v0.yMax + (ev.clientY - this.sy) / scale });
+        } };
+      return;
+    }
+    if (e.button === 2) return;
+    if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
+    else if (st.tool === 'eraser') {
+      gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
+        upd(pp) {
+          const d = dist(pp, this.last), steps = Math.max(1, Math.ceil(d / (stateRef.current.eraserR * .4)));
+          for (let i = 1; i <= steps; i++) {
+            if (eraseAt({ x: this.last.x + (pp.x - this.last.x) * i / steps, y: this.last.y + (pp.y - this.last.y) * i / steps })) this.changed = true;
+          }
+          this.last = pp;
+        } };
+      if (eraseAt(p)) gestureRef.current.changed = true;
+      rerender();
+    }
+    else if (st.tool === 'pen') penDown(p, dbl);
+    else if (st.tool === 'select') selectDown(p, e);
+    else if (st.tool === 'node') nodeDown(p, e, dbl);
+  };
+  const onPointerMove = e => {
+    if (importOpenRef.current) return;
+    const p = posFromEvent(e);
+    const st = stateRef.current;
+    if (st.tool === 'eraser') eraserPosRef.current = p;
+    const g = gestureRef.current;
+    if (g) { e.preventDefault(); g.upd(p, e); rerender(); return; }
+    if (brushRef.current) {
+      e.preventDefault();
+      const pts = brushRef.current, last = pts[pts.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) > 3) pts.push(p);
+      rerender();
+      return;
+    }
+    if (st.tool === 'pen') {
+      const pen = penRef.current;
+      if (pen.dragging && pen.dragNode) {
+        const n = pen.dragNode;
+        if (Math.hypot(p.x - n.x, p.y - n.y) > 3) {
+          n.hOut = { x: F(p.x), y: F(p.y) };
+          n.hIn = { x: F(2 * n.x - p.x), y: F(2 * n.y - p.y) };
+          n.smooth = true;
+        }
+      } else pen.cursor = p;
+    }
+    rerender();
+  };
+  const onPointerUp = () => {
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    if (g) {
+      if (g.type === 'erase') { if (g.changed) { pushHistory(g.snap); setObjects(clone(stateRef.current.objects)); setMessage('Ластик применён.'); } }
+      else if (g.type === 'moveOrToggle') {
+        if (g.moved && g.map) bakeGesture({ ...g, type: 'transform' });
+        else if (g.toggle) setSelMode(m => m === 'scale' ? 'rotate' : 'scale');
+      }
+      else if (g.type !== 'pan') bakeGesture(g);
+    }
+    if (brushRef.current) endBrush();
+    const pen = penRef.current;
+    if (pen.dragging) { pen.dragging = false; pen.dragNode = null; }
+    rerender();
+  };
+  const onWheel = e => {
+    e.preventDefault();
+    const p = posFromEvent(e);
+    const v = stateRef.current.view;
+    const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+    const span = (v.yMax - v.yMin) * factor;
+    if (span < 150 || span > 6000) return;
+    const f = span / (v.yMax - v.yMin);
+    setView({
+      xMin: p.x - (p.x - v.xMin) * f, xMax: p.x + (v.xMax - p.x) * f,
+      yMin: p.y - (p.y - v.yMin) * f, yMax: p.y + (v.yMax - p.y) * f
+    });
+  };
+
+  /* ===== Действия панели свойств ===== */
+  const transformSel = fn => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      ob.contours = mapContours(ob.contours, fn);
+      return list;
+    });
+  };
+  const selBBox = () => { const so = getObj(); return so ? bboxOfContours(so.contours) : null; };
+  const duplicateSel = () => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const cp = clone(so);
+      cp.id = uid();
+      cp.contours = mapContours(cp.contours, q => ({ x: q.x + 40, y: q.y - 40 }));
+      list.push(cp);
+      setSel(cp.id);
+      return list;
+    });
+  };
+  const deleteSel = () => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const i = list.findIndex(x => x.id === so.id);
+      if (i >= 0) list.splice(i, 1);
+      setSel(null); setSelNode(null);
+      return list;
+    });
+  };
+  const flipSel = horiz => {
+    const bb = selBBox();
+    if (!bb) return;
+    transformSel(q => horiz ? { x: 2 * bb.cx - q.x, y: q.y } : { x: q.x, y: 2 * bb.cy - q.y });
+  };
+  const orderSel = front => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const i = list.findIndex(x => x.id === so.id);
+      list.splice(i, 1);
+      if (front) list.push(so); else list.unshift(so);
+      return list;
+    });
+  };
+  const rotateSel = deg => {
+    const bb = selBBox();
+    if (!bb || !deg) return;
+    const M = around({ x: bb.cx, y: bb.cy }, mR(deg * Math.PI / 180));
+    transformSel(q => mApply(M, q));
+  };
+  const alignBaseline = () => {
+    const bb = selBBox();
+    if (!bb) return;
+    const dy = -bb.y;
+    transformSel(q => ({ x: q.x, y: q.y + dy }));
+    setMessage('Низ объекта поставлен на базовую линию.');
+  };
+  const centerGlyph = () => {
+    const bb = selBBox();
+    if (!bb) return;
+    const dx = 450 - bb.cx;
+    transformSel(q => ({ x: q.x + dx, y: q.y }));
+  };
+  const fitHeight = target => {
+    const bb = selBBox();
+    if (!bb) return;
+    const s = target / bb.h;
+    transformSel(q => ({ x: bb.x + (q.x - bb.x) * s, y: bb.y + (q.y - bb.y) * s }));
+    setMessage(`Высота подогнана под ${target} единиц.`);
+  };
+  const addNodeAfter = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    let inserted = null;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      inserted = insertNodeAt(ob, { ci: st.selNode.ci, seg: st.selNode.ni, t: .5 });
+      return list;
+    });
+    setSelNode(inserted);
+  };
+  const deleteNode = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const c = ob.contours[st.selNode.ci];
+      if (!c) return list;
+      c.nodes.splice(st.selNode.ni, 1);
+      if (c.nodes.length < 3) ob.contours.splice(st.selNode.ci, 1);
+      if (!ob.contours.length) { const i = list.findIndex(x => x.id === ob.id); list.splice(i, 1); setSel(null); }
+      setSelNode(null);
+      return list;
+    });
+  };
+  const toggleSmoothSel = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const ns = ob.contours[st.selNode.ci].nodes, n = ns[st.selNode.ni], len = ns.length;
+      n.smooth = !n.smooth;
+      if (n.smooth) {
+        const prev = ns[(st.selNode.ni - 1 + len) % len], next = ns[(st.selNode.ni + 1) % len];
+        const tx = (next.x - prev.x) / 5, ty = (next.y - prev.y) / 5;
+        n.hOut = { x: F(n.x + tx), y: F(n.y + ty) };
+        n.hIn = { x: F(n.x - tx), y: F(n.y - ty) };
+      }
+      return list;
+    });
+  };
+
+  /* ===== Применение к букве ===== */
+  const applyToGlyph = () => {
+    const all = [];
+    for (const o of objects) {
+      normalizeObject(o);
+      for (const c of o.contours) {
+        const flat = flattenContour(c, 4).map(p => ({ x: F(p.x), y: F(p.y) }));
+        if (flat.length >= 3 && Math.abs(areaStd(flat)) > 20) all.push(flat);
+      }
+    }
+    let advanceWidth = glyph.advanceWidth || 600;
+    if (all.length) {
+      let maxX = -Infinity;
+      for (const c of all) for (const p of c) if (p.x > maxX) maxX = p.x;
+      advanceWidth = Math.max(250, Math.min(1400, Math.round(maxX + 60)));
+    }
+    onApply({ outlines: all, advanceWidth });
+  };
+
+  /* ===== Импорт ===== */
+  const regenPreview = useCallback(() => {
+    try {
+      let cs = null;
+      if (importTab === 'pattern') cs = patternContours(patternKind, patternSize);
+      else if (importTab === 'symbol') cs = loadedFont && symFamily === '__custom__' ? symbolFromFontFile(loadedFont, [...(symChar || char)][0] || char) : symbolFromSystem([...(symChar || char)][0] || char, symFamily, symWeight, symItalic);
+      else if (importTab === 'png' && pngSource) cs = contoursFromImage(pngSource, pngThr, pngInvert, pngSimplify, pngSmooth, isLower);
+      else if (importTab === 'svg' && svgText.trim()) cs = contoursFromSvg(svgText, svgTol, svgSmooth, isLower);
+      if (cs && cs.length) {
+        const tmp = { id: 'preview', contours: cs };
+        normalizeObject(tmp);
+        setPreviewContours(tmp.contours);
+      } else setPreviewContours(null);
+    } catch (err) {
+      setPreviewContours(null);
+      setMessage(err.message || String(err));
+    }
+  }, [importTab, patternKind, patternSize, symChar, symFamily, symWeight, symItalic, loadedFont, pngSource, pngThr, pngInvert, pngSimplify, pngSmooth, svgText, svgTol, svgSmooth, char, isLower]);
+  useEffect(() => { if (importOpen) { const t = setTimeout(regenPreview, 120); return () => clearTimeout(t); } }, [importOpen, regenPreview]);
+
+  const insertPreview = () => {
+    if (!previewContours) return;
+    const cs = clone(previewContours);
+    commit(list => {
+      const no = { id: uid(), contours: cs };
+      list.push(no);
+      setSel(no.id);
+      return list;
+    });
+    setImportOpen(false);
+    setToolState('select');
+    setMessage('Вставлено и привязано к направляющим. Тяните ручки для размера; повторный клик — поворот/скос.');
+  };
+  const loadPngFile = file => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, 400 / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s));
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      setPngSource({ data: ctx.getImageData(0, 0, w, h).data, w, h });
+      URL.revokeObjectURL(url);
+      setImportTab('png'); setImportOpen(true);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); setMessage('Не удалось открыть картинку.'); };
+    img.src = url;
+  };
+  const loadSvgFile = file => {
+    const r = new FileReader();
+    r.onload = () => { setSvgText(String(r.result)); setImportTab('svg'); setImportOpen(true); };
+    r.readAsText(file);
+  };
+  const loadFontFile = async file => {
+    try {
+      const buf = await file.arrayBuffer();
+      const font = opentype.parse(buf);
+      setLoadedFont(font);
+      const name = (font.names && font.names.fontFamily && (font.names.fontFamily.en || font.names.fontFamily.ru)) || file.name;
+      setLoadedFontName(name);
+      setSymFamily('__custom__');
+    } catch (err) { setMessage('Не удалось прочитать шрифт: ' + (err.message || err)); }
+  };
+
+  /* ===== Клавиатура ===== */
+  useEffect(() => {
+    const down = e => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
+      if (e.key === 'Escape') {
+        if (importOpenRef.current) { setImportOpen(false); return; }
+        if (typing) { e.target.blur(); return; }
+        if (penRef.current.nodes.length) { penRef.current.nodes = []; rerender(); return; }
+        onClose();
+        return;
+      }
+      if (typing || importOpenRef.current) return;
+      if (e.code === 'Space') { spaceRef.current = true; e.preventDefault(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyD') { e.preventDefault(); duplicateSel(); return; }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (stateRef.current.tool === 'node' && stateRef.current.selNode) deleteNode();
+        else deleteSel();
+        return;
+      }
+      if (e.key === 'Enter' && stateRef.current.tool === 'pen') { finishPen(); return; }
+      if (e.key.startsWith('Arrow') && getObj()) {
+        e.preventDefault();
+        const s = e.shiftKey ? 20 : 4;
+        const dx = e.key === 'ArrowLeft' ? -s : e.key === 'ArrowRight' ? s : 0;
+        const dy = e.key === 'ArrowUp' ? s : e.key === 'ArrowDown' ? -s : 0;
+        transformSel(q => ({ x: q.x + dx, y: q.y + dy }));
+        return;
+      }
+      const tools = { KeyV: 'select', KeyN: 'node', KeyP: 'pen', KeyB: 'brush', KeyE: 'eraser', KeyH: 'hand' };
+      if (tools[e.code] && !e.ctrlKey && !e.metaKey && !e.altKey) { setToolState(tools[e.code]); penRef.current.nodes = []; rerender(); }
+    };
+    const up = e => { if (e.code === 'Space') spaceRef.current = false; };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  });
+
+  /* ===== Мини-превью импорта ===== */
+  const previewSvg = () => {
+    if (!previewContours) return null;
+    let d = '';
+    for (const c of previewContours) {
+      const ns = c.nodes, n = ns.length;
+      if (n < 2) continue;
+      d += `M ${F(ns[0].x)} ${F(-ns[0].y)}`;
+      for (let i = 0; i < n; i++) {
+        const a = ns[i], b = ns[(i + 1) % n], cv = segCtrl(a, b);
+        if (cv) d += ` C ${F(cv[0].x)} ${F(-cv[0].y)} ${F(cv[1].x)} ${F(-cv[1].y)} ${F(b.x)} ${F(-b.y)}`;
+        else d += ` L ${F(b.x)} ${F(-b.y)}`;
+      }
+      d += ' Z';
+    }
+    return <svg viewBox="-60 -840 1000 1100" className="ve-preview-svg">
+      <rect x="0" y="-800" width="900" height="1000" fill="#f4f1ea"/>
+      {[[-800, '#3b82f6'], [-700, '#6366f1'], [-500, '#8b5cf6'], [0, '#22c55e'], [200, '#ef4444']].map(([y, color]) => <line key={y} x1="-60" y1={y} x2="940" y2={y} stroke={color} strokeWidth={y === 0 ? 3 : 1.5}/>)}
+      <path d={d} fill="#20242d" fillRule="nonzero"/>
+    </svg>;
+  };
+
+  const bb = selBBox();
+  const st = stateRef.current;
+  const setTool = t => { setToolState(t); penRef.current.nodes = []; brushRef.current = null; eraserPosRef.current = null; rerender(); };
+
+  return <div className="ve-overlay">
+    <div className="ve-window">
+      <div className="ve-titlebar">
+        <strong>Векторный редактор — символ «{char === ' ' ? '␠' : char}»</strong>
+        <span className="ve-title-note">Объекты привязаны к направляющим шрифта · всё сохраняется в букву</span>
+        <button className="button" onClick={onClose}>✕ Закрыть</button>
+      </div>
+
+      <div className="ve-propertybar">
+        <button className="button primary" onClick={() => { setImportOpen(true); setImportTab('pattern'); }}>📥 Вставить</button>
+        <span className="ve-sep"/>
+        {tool === 'select' && <>
+          <label>X<input type="number" value={bb ? Math.round(bb.x) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && isFinite(v)) { const dx = v - bb.x; transformSel(q => ({ x: q.x + dx, y: q.y })); } }}/></label>
+          <label>Y<input type="number" value={bb ? Math.round(bb.y) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && isFinite(v)) { const dy = v - bb.y; transformSel(q => ({ x: q.x, y: q.y + dy })); } }}/></label>
+          <label>Ш<input type="number" min="1" value={bb ? Math.round(bb.w) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && v > 0) { const s = v / bb.w; transformSel(q => ({ x: bb.x + (q.x - bb.x) * s, y: q.y })); } }}/></label>
+          <label>В<input type="number" min="1" value={bb ? Math.round(bb.h) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && v > 0) { const s = v / bb.h; transformSel(q => ({ x: q.x, y: bb.y + (q.y - bb.y) * s })); } }}/></label>
+          <label>°<input type="number" step="5" defaultValue={0} disabled={!bb} onChange={e => { const v = Number(e.target.value); e.target.value = 0; rotateSel(v); }}/></label>
+          <button className="button" disabled={!bb} onClick={duplicateSel} title="Дублировать (Ctrl+D)">⧉</button>
+          <button className="button" disabled={!bb} onClick={() => flipSel(true)} title="Отразить по горизонтали">⇋</button>
+          <button className="button" disabled={!bb} onClick={() => flipSel(false)} title="Отразить по вертикали">⇅</button>
+          <button className="button" disabled={!bb} onClick={() => orderSel(false)} title="На задний план">⬇</button>
+          <button className="button" disabled={!bb} onClick={() => orderSel(true)} title="На передний план">⬆</button>
+          <button className="button" disabled={!bb} onClick={alignBaseline} title="Поставить низ на базовую линию">⌖ База</button>
+          <button className="button" disabled={!bb} onClick={centerGlyph} title="Центрировать по полю">↔ Центр</button>
+          <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.capHeight)} title="Высота прописной (700)">↕ 700</button>
+          <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.xHeight)} title="Высота строчной (500)">↕ 500</button>
+          <button className="button danger" disabled={!bb} onClick={deleteSel} title="Удалить (Delete)">🗑</button>
+        </>}
+        {tool === 'node' && <>
+          <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
+          <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
+          <button className="button" disabled={!st.selNode} onClick={toggleSmoothSel} title="Угол/гладкий (или двойной клик по узлу)">◇/◆</button>
+          <span className="ve-hint">клик по линии — новый узел · тяни узлы и рычаги · Alt+рычаг — излом</span>
+        </>}
+        {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
+        {tool === 'brush' && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
+        {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
+        {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
+        <span className="ve-flex"/>
+        <button className="button" onClick={undo} title="Ctrl+Z">↩</button>
+        <button className="button" onClick={redo} title="Ctrl+Y">↪</button>
+        <button className="button" onClick={() => setView({ ...VIEW0 })} title="Показать всё поле">⤢</button>
+        <button className="button primary" onClick={applyToGlyph} title="Записать объекты в букву и вернуться">✔ Применить к букве</button>
+      </div>
+
+      <div className="ve-body">
+        <div className="ve-toolbox">
+          {TOOL_DEFS.map(([t, key, title]) => <button key={t} className={`ve-tool ${tool === t ? 'active' : ''}`} title={`${title} (${key})`} onClick={() => setTool(t)}>
+            {t === 'select' ? '➤' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
+            <small>{key}</small>
+          </button>)}
+        </div>
+        <div className="ve-canvas-wrap" onDragOver={e => e.preventDefault()} onDrop={e => {
+          e.preventDefault();
+          const f = e.dataTransfer.files && e.dataTransfer.files[0];
+          if (!f) return;
+          if (/svg/.test(f.type) || /\.svg$/i.test(f.name)) loadSvgFile(f);
+          else if (/^image\//.test(f.type)) loadPngFile(f);
+        }}>
+          <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onWheel={onWheel} onContextMenu={e => e.preventDefault()} style={{ touchAction: 'none' }}/>
+        </div>
+      </div>
+      <div className="ve-status">{message}</div>
+
+      {importOpen && <div className="ve-modal-backdrop" onPointerDown={e => { if (e.target === e.currentTarget) setImportOpen(false); }}>
+        <div className="ve-modal">
+          <div className="ve-modal-head"><strong>📥 Вставить в символ «{char === ' ' ? '␠' : char}»</strong><button className="button" onClick={() => setImportOpen(false)}>✕</button></div>
+          <div className="ve-tabs">
+            {[['pattern', 'Узор'], ['symbol', 'Буква / знак'], ['png', 'Картинка'], ['svg', 'SVG']].map(([t, label]) => <button key={t} className={importTab === t ? 'active' : ''} onClick={() => setImportTab(t)}>{label}</button>)}
+          </div>
+          <div className="ve-modal-body">
+            <div className="ve-import-controls">
+              {importTab === 'pattern' && <>
+                <label>Узор<select value={patternKind} onChange={e => setPatternKind(e.target.value)}>{PATTERNS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}</select></label>
+                <label>Размер: {patternSize}<input type="range" min="200" max="800" step="20" value={patternSize} onChange={e => setPatternSize(Number(e.target.value))}/></label>
+                <p className="ve-note">Орнамент вставляется как редактируемый векторный объект: масштаб, поворот, скос, узлы — как в Corel.</p>
+              </>}
+              {importTab === 'symbol' && <>
+                <label>Символ<input type="text" maxLength={2} value={symChar} onChange={e => setSymChar(e.target.value)}/></label>
+                <label>Шрифт<select value={symFamily} onChange={e => setSymFamily(e.target.value)}>
+                  {FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
+                  {loadedFont && <option value="__custom__">📄 {loadedFontName}</option>}
+                </select></label>
+                <label>Насыщенность<select value={symWeight} onChange={e => setSymWeight(e.target.value)}><option value="400">Обычная</option><option value="700">Жирная</option></select></label>
+                <label className="ve-check"><input type="checkbox" checked={symItalic} onChange={e => setSymItalic(e.target.checked)}/> Курсив</label>
+                <label className="button">🔤 Свой TTF/OTF…<input type="file" accept=".ttf,.otf,.woff" hidden onChange={e => { if (e.target.files[0]) loadFontFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <p className="ve-note">Из файла шрифта контур берётся точный; системный шрифт обводится автоматически. Высота подгоняется под {isLower ? 'строчные (500)' : 'прописные (700)'}, низ — на базовую линию.</p>
+              </>}
+              {importTab === 'png' && <>
+                <label className="button">Выбрать PNG/JPG…<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { if (e.target.files[0]) loadPngFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <label>Порог: {pngThr}<input type="range" min="10" max="245" value={pngThr} onChange={e => setPngThr(Number(e.target.value))}/></label>
+                <label>Упрощение: {pngSimplify}<input type="range" min="0.4" max="4" step="0.2" value={pngSimplify} onChange={e => setPngSimplify(Number(e.target.value))}/></label>
+                <label>Сглаживание: {pngSmooth}<input type="range" min="0" max="1.5" step="0.1" value={pngSmooth} onChange={e => setPngSmooth(Number(e.target.value))}/></label>
+                <label className="ve-check"><input type="checkbox" checked={pngInvert} onChange={e => setPngInvert(e.target.checked)}/> Инвертировать (светлое на тёмном)</label>
+                <p className="ve-note">Можно также перетащить файл прямо на холст.</p>
+              </>}
+              {importTab === 'svg' && <>
+                <label className="button">Выбрать SVG…<input type="file" accept=".svg,image/svg+xml" hidden onChange={e => { if (e.target.files[0]) loadSvgFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <textarea rows={4} placeholder="…или вставьте код SVG сюда" value={svgText} onChange={e => setSvgText(e.target.value)}/>
+                <label>Упрощение: {svgTol}<input type="range" min="0.2" max="4" step="0.2" value={svgTol} onChange={e => setSvgTol(Number(e.target.value))}/></label>
+                <label>Сглаживание: {svgSmooth}<input type="range" min="0" max="1.5" step="0.1" value={svgSmooth} onChange={e => setSvgSmooth(Number(e.target.value))}/></label>
+              </>}
+            </div>
+            <div className="ve-import-preview">
+              {previewSvg() || <div className="ve-preview-empty">Предпросмотр появится здесь</div>}
+            </div>
+          </div>
+          <div className="ve-modal-foot">
+            <button className="button" onClick={() => setImportOpen(false)}>Отмена</button>
+            <button className="button primary" disabled={!previewContours} onClick={insertPreview}>Вставить в редактор</button>
+          </div>
+        </div>
+      </div>}
+    </div>
+  </div>;
+  } import { useEffect, useRef, useState, useCallback } from 'react';
+import * as opentypeModule from 'opentype.js';
+import { METRICS } from '../lib/project.js';
+import { strokeToContours } from '../lib/geometry.js';
+
+const opentype = opentypeModule.default ?? opentypeModule;
+
+/* ===== Геометрия (координаты шрифта: y вверх, базовая линия y=0) ===== */
+const VIEW0 = { xMin: -60, xMax: 940, yMin: -260, yMax: 840 };
+const F = n => Math.round(n * 10) / 10;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+const clone = o => JSON.parse(JSON.stringify(o));
+let uidCounter = 1;
+const uid = () => 'o' + (uidCounter++) + '_' + Date.now().toString(36);
+
+function cubicAt(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  return {
+    x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
+    y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y
+  };
+}
+function segCtrl(a, b) {
+  if (!a.hOut && !b.hIn) return null;
+  return [a.hOut || { x: a.x, y: a.y }, b.hIn || { x: b.x, y: b.y }];
+}
+function flattenContour(c, step = 6) {
+  const ns = c.nodes, n = ns.length, pts = [];
+  if (n < 2) return pts;
+  pts.push({ x: ns[0].x, y: ns[0].y, seg: 0, t: 0 });
+  for (let i = 0; i < n; i++) {
+    const a = ns[i], b = ns[(i + 1) % n];
+    const A = { x: a.x, y: a.y }, B = { x: b.x, y: b.y };
+    const cv = segCtrl(a, b);
+    if (cv) {
+      const L = dist(A, cv[0]) + dist(cv[0], cv[1]) + dist(cv[1], B);
+      const k = Math.max(4, Math.min(48, Math.ceil(L / step)));
+      for (let j = 1; j <= k; j++) {
+        const p = cubicAt(A, cv[0], cv[1], B, j / k);
+        pts.push({ x: p.x, y: p.y, seg: i, t: j / k });
+      }
+    } else pts.push({ x: B.x, y: B.y, seg: (i + 1) % n, t: 0 });
+  }
+  pts.pop();
+  return pts;
+}
+function areaStd(pts) {
+  let s = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) s += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+  return s / 2;
+}
+function pointInPoly(p, pts) {
+  let ins = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) ins = !ins;
+  }
+  return ins;
+}
+function windingAt(p, pts) {
+  let w = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i];
+    const cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (a.y <= p.y) { if (b.y > p.y && cr > 0) w++; }
+    else { if (b.y <= p.y && cr < 0) w--; }
+  }
+  return w;
+}
+function reverseContour(c) {
+  c.nodes.reverse();
+  for (const n of c.nodes) { const t = n.hIn; n.hIn = n.hOut; n.hOut = t; }
+}
+// Внешний контур TTF (y вверх): по часовой => площадь < 0. Дырки — наоборот.
+function normalizeObject(obj) {
+  const flats = obj.contours.map(c => flattenContour(c, 8));
+  for (let i = 0; i < obj.contours.length; i++) {
+    if (flats[i].length < 3) continue;
+    let depth = 0;
+    for (let j = 0; j < obj.contours.length; j++)
+      if (j !== i && flats[j].length > 2 && pointInPoly(flats[i][0], flats[j])) depth++;
+    const want = depth % 2 === 0 ? -1 : 1;
+    const a = areaStd(flats[i]);
+    if (a !== 0 && Math.sign(a) !== want) reverseContour(obj.contours[i]);
+  }
+}
+function bboxOfContours(cs) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const c of cs) for (const p of flattenContour(c, 6)) {
+    if (p.x < x1) x1 = p.x;
+    if (p.x > x2) x2 = p.x;
+    if (p.y < y1) y1 = p.y;
+    if (p.y > y2) y2 = p.y;
+  }
+  if (x1 > x2) return null;
+  return { x: x1, y: y1, x2, y2, w: Math.max(x2 - x1, .001), h: Math.max(y2 - y1, .001), cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
+}
+function mapNode(n, f) {
+  const p = f({ x: n.x, y: n.y });
+  return { x: p.x, y: p.y, smooth: n.smooth, hIn: n.hIn ? f(n.hIn) : null, hOut: n.hOut ? f(n.hOut) : null };
+}
+const mapContours = (cs, f) => cs.map(c => ({ nodes: c.nodes.map(n => mapNode(n, f)) }));
+const mT = (tx, ty) => [1, 0, 0, 1, tx, ty];
+const mR = a => [Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0];
+function mMul(A, B) {
+  return [A[0]*B[0]+A[2]*B[1], A[1]*B[0]+A[3]*B[1], A[0]*B[2]+A[2]*B[3], A[1]*B[2]+A[3]*B[3], A[0]*B[4]+A[2]*B[5]+A[4], A[1]*B[4]+A[3]*B[5]+A[5]];
+}
+const mApply = (m, p) => ({ x: m[0]*p.x + m[2]*p.y + m[4], y: m[1]*p.x + m[3]*p.y + m[5] });
+const around = (c, M) => mMul(mT(c.x, c.y), mMul(M, mT(-c.x, -c.y)));
+
+function perpDist(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const L = Math.hypot(dx, dy);
+  if (L < 1e-9) return dist(p, a);
+  return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / L;
+}
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  let dmax = 0, idx = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = perpDist(pts[i], pts[0], pts[pts.length - 1]);
+    if (d > dmax) { dmax = d; idx = i; }
+  }
+  if (dmax > eps) {
+    const l = rdp(pts.slice(0, idx + 1), eps), r = rdp(pts.slice(idx), eps);
+    return l.slice(0, -1).concat(r);
+  }
+  return [pts[0], pts[pts.length - 1]];
+}
+function simplifyClosed(pts, eps) {
+  if (pts.length < 5) return pts;
+  let far = 1, fd = -1;
+  for (let i = 1; i < pts.length; i++) {
+    const d = dist(pts[i], pts[0]);
+    if (d > fd) { fd = d; far = i; }
+  }
+  const s1 = rdp(pts.slice(0, far + 1), eps);
+  const s2 = rdp(pts.slice(far).concat([pts[0]]), eps);
+  return s1.slice(0, -1).concat(s2.slice(0, -1));
+}
+function smoothNodes(pts, f) {
+  const n = pts.length, k = f / 4;
+  return pts.map((p, i) => {
+    const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
+    if (f <= 0 || n < 3) return { x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false };
+    const tx = (next.x - prev.x) * k, ty = (next.y - prev.y) * k;
+    return { x: F(p.x), y: F(p.y), smooth: true, hIn: { x: F(p.x - tx), y: F(p.y - ty) }, hOut: { x: F(p.x + tx), y: F(p.y + ty) } };
+  });
+}
+
+/* ===== Трассировка растра (marching squares) ===== */
+function traceBinary(v, w, h) {
+  const segs = new Map();
+  const key = (x, y) => x + '_' + y;
+  const add = (a, b) => {
+    const k = key(a[0], a[1]);
+    if (!segs.has(k)) segs.set(k, []);
+    segs.get(k).push(b);
+  };
+  const V = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? 0 : v[y * w + x];
+  for (let y = -1; y < h; y++) for (let x = -1; x < w; x++) {
+    const idx = V(x, y) * 8 + V(x + 1, y) * 4 + V(x + 1, y + 1) * 2 + V(x, y + 1);
+    if (idx === 0 || idx === 15) continue;
+    const N = [x + .5, y], E = [x + 1, y + .5], S = [x + .5, y + 1], W = [x, y + .5];
+    switch (idx) {
+      case 1: add(S, W); break;
+      case 2: add(E, S); break;
+      case 3: add(E, W); break;
+      case 4: add(N, E); break;
+      case 5: add(N, E); add(S, W); break;
+      case 6: add(N, S); break;
+      case 7: add(N, W); break;
+      case 8: add(W, N); break;
+      case 9: add(S, N); break;
+      case 10: add(W, N); add(E, S); break;
+      case 11: add(E, N); break;
+      case 12: add(W, E); break;
+      case 13: add(S, E); break;
+      case 14: add(W, S); break;
+    }
+  }
+  const loops = [];
+  segs.forEach((list, k) => {
+    while (list.length) {
+      const start = k.split('_').map(Number);
+      const loop = [start];
+      let next = list.pop(), guard = 2000000, ok = false;
+      while (guard--) {
+        loop.push(next);
+        const nk = key(next[0], next[1]);
+        if (nk === k) { ok = true; break; }
+        const l2 = segs.get(nk);
+        if (!l2 || !l2.length) break;
+        next = l2.pop();
+      }
+      if (ok && loop.length > 3) { loop.pop(); loops.push(loop.map(p => ({ x: p[0], y: p[1] }))); }
+    }
+  });
+  return loops;
+}
+function bitmapLoops(data, w, h, thr, invert) {
+  const v = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const a = data[i * 4 + 3];
+    const lum = .299 * data[i * 4] + .587 * data[i * 4 + 1] + .114 * data[i * 4 + 2];
+    let ink = a >= 128 && lum < thr;
+    if (invert) ink = a >= 128 && lum >= thr;
+    v[i] = ink ? 1 : 0;
+  }
+  return traceBinary(v, w, h);
+}
+function loopsToContours(loops, tol, smoothF) {
+  const cs = [];
+  for (const lp of loops) {
+    const simp = simplifyClosed(lp, tol);
+    if (simp.length < 3) continue;
+    const c = { nodes: smoothNodes(simp, smoothF) };
+    if (Math.abs(areaStd(flattenContour(c, 6))) < 30) continue;
+    cs.push(c);
+  }
+  return cs;
+}
+function fitContoursToGlyph(cs, isLower) {
+  const bb = bboxOfContours(cs);
+  if (!bb) return cs;
+  const targetH = isLower ? METRICS.xHeight : METRICS.capHeight;
+  const s = targetH / bb.h;
+  return mapContours(cs, p => ({ x: 450 + (p.x - bb.cx) * s, y: (p.y - bb.y) * s }));
+}
+
+/* ===== Импорт: символ из системного шрифта ===== */
+function symbolFromSystem(ch, family, weight, italic) {
+  const isLower = ch.toLowerCase() === ch && ch.toUpperCase() !== ch;
+  const cv = document.createElement('canvas');
+  cv.width = 480; cv.height = 480;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 480, 480);
+  ctx.fillStyle = '#000';
+  ctx.font = `${italic ? 'italic ' : ''}${weight} 300px "${family}"`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const capAsc = ctx.measureText('H').actualBoundingBoxAscent || 210;
+  const xAsc = ctx.measureText('x').actualBoundingBoxAscent || 150;
+  const target = isLower ? METRICS.xHeight : METRICS.capHeight;
+  const s = target / (isLower ? xAsc : capAsc);
+  ctx.fillText(ch, 240, 330);
+  const loops = bitmapLoops(ctx.getImageData(0, 0, 480, 480).data, 480, 480, 128, false);
+  if (!loops.length) throw new Error('Символ не отрисовался.');
+  const mapped = loops.map(lp => lp.map(p => ({ x: 450 + (p.x - 240) * s, y: (330 - p.y) * s })));
+  return loopsToContours(mapped, 1.2, .6);
+}
+
+/* ===== Импорт: точный контур из TTF/OTF ===== */
+function otPathToContours(path, map) {
+  const cs = [];
+  let cur = null, prev = null;
+  for (const c of path.commands) {
+    if (c.type === 'M') {
+      cur = { nodes: [] }; cs.push(cur);
+      const p = map(c.x, c.y);
+      cur.nodes.push({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false });
+      prev = p;
+    } else if (c.type === 'L' && cur) {
+      const p = map(c.x, c.y);
+      cur.nodes.push({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false });
+      prev = p;
+    } else if (c.type === 'Q' && cur) {
+      const q = map(c.x1, c.y1), p = map(c.x, c.y);
+      const last = cur.nodes[cur.nodes.length - 1];
+      last.hOut = { x: F(prev.x + (q.x - prev.x) * 2 / 3), y: F(prev.y + (q.y - prev.y) * 2 / 3) };
+      last.smooth = true;
+      cur.nodes.push({ x: F(p.x), y: F(p.y), smooth: true, hOut: null, hIn: { x: F(p.x + (q.x - p.x) * 2 / 3), y: F(p.y + (q.y - p.y) * 2 / 3) } });
+      prev = p;
+    } else if (c.type === 'C' && cur) {
+      const c1 = map(c.x1, c.y1), c2 = map(c.x2, c.y2), p = map(c.x, c.y);
+      const last = cur.nodes[cur.nodes.length - 1];
+      last.hOut = { x: F(c1.x), y: F(c1.y) };
+      last.smooth = true;
+      cur.nodes.push({ x: F(p.x), y: F(p.y), smooth: true, hOut: null, hIn: { x: F(c2.x), y: F(c2.y) } });
+      prev = p;
+    } else if (c.type === 'Z' && cur) {
+      if (cur.nodes.length > 1) {
+        const fN = cur.nodes[0], lN = cur.nodes[cur.nodes.length - 1];
+        if (Math.hypot(fN.x - lN.x, fN.y - lN.y) < .05) { fN.hIn = lN.hIn; cur.nodes.pop(); }
+      }
+      cur = null;
+    }
+  }
+  return cs.filter(c => c.nodes.length >= 3);
+}
+function symbolFromFontFile(font, ch) {
+  const isLower = ch.toLowerCase() === ch && ch.toUpperCase() !== ch;
+  const glyph = font.charToGlyph(ch);
+  if (!glyph || glyph.index === 0) throw new Error(`В этом шрифте нет символа «${ch}».`);
+  const gb = glyph.path.getBoundingBox();
+  if (!isFinite(gb.x1)) throw new Error('Пустой контур символа.');
+  const upm = font.unitsPerEm || 1000;
+  const os2 = font.tables && font.tables.os2;
+  const capH = (os2 && os2.sCapHeight) || font.ascender * .9 || upm * .7;
+  const xH = (os2 && os2.sxHeight) || upm * .5;
+  const s = (isLower ? METRICS.xHeight : METRICS.capHeight) / (isLower ? xH : capH);
+  const cx = (gb.x1 + gb.x2) / 2;
+  return otPathToContours(glyph.path, (x, y) => ({ x: 450 + (x - cx) * s, y: y * s }));
+}
+
+/* ===== Импорт: PNG/JPG ===== */
+function contoursFromImage(source, threshold, invert, simplify, smoothF, isLower) {
+  const loops = bitmapLoops(source.data, source.w, source.h, threshold, invert);
+  if (!loops.length) return [];
+  const flipped = loops.map(lp => lp.map(p => ({ x: p.x, y: source.h - p.y })));
+  const cs = loopsToContours(flipped, simplify, smoothF);
+  return fitContoursToGlyph(cs, isLower);
+}
+
+/* ===== Импорт: SVG ===== */
+function shapeToD(elm) {
+  const g = n => Number(elm.getAttribute(n) || 0);
+  const tag = elm.tagName.toLowerCase();
+  if (tag === 'path') return elm.getAttribute('d') || '';
+  if (tag === 'rect') {
+    const x = g('x'), y = g('y'), w = g('width'), h = g('height');
+    let rx = g('rx') || g('ry'), ry = g('ry') || g('rx');
+    rx = Math.min(rx, w / 2); ry = Math.min(ry, h / 2);
+    if (rx > 0) return `M ${x + rx} ${y} H ${x + w - rx} A ${rx} ${ry} 0 0 1 ${x + w} ${y + ry} V ${y + h - ry} A ${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h} H ${x + rx} A ${rx} ${ry} 0 0 1 ${x} ${y + h - ry} V ${y + ry} A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`;
+    return `M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`;
+  }
+  if (tag === 'circle') {
+    const cx = g('cx'), cy = g('cy'), r = g('r');
+    return `M ${cx - r} ${cy} A ${r} ${r} 0 1 0 ${cx + r} ${cy} A ${r} ${r} 0 1 0 ${cx - r} ${cy} Z`;
+  }
+  if (tag === 'ellipse') {
+    const cx = g('cx'), cy = g('cy'), rx = g('rx'), ry = g('ry');
+    return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`;
+  }
+  if (tag === 'line') return `M ${g('x1')} ${g('y1')} L ${g('x2')} ${g('y2')}`;
+  if (tag === 'polyline' || tag === 'polygon') {
+    const nums = (elm.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number);
+    let d = '';
+    for (let i = 0; i + 1 < nums.length; i += 2) d += (i ? ' L ' : 'M ') + nums[i] + ' ' + nums[i + 1];
+    return d + (tag === 'polygon' ? ' Z' : '');
+  }
+  return '';
+}
+function ribbonPoly(pts, w) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const L = [], R = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l * w / 2, ny = dx / l * w / 2;
+    L.push({ x: pts[i].x + nx, y: pts[i].y + ny });
+    R.push({ x: pts[i].x - nx, y: pts[i].y - ny });
+  }
+  return L.concat(R.reverse());
+}
+function contoursFromSvg(text, tol, smoothF, isLower) {
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  const root = doc.documentElement;
+  if (!root || root.tagName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) throw new Error('Не удалось разобрать SVG.');
+  const holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:10px;height:10px;overflow:hidden;visibility:hidden;';
+  const svgClone = document.importNode(root, true);
+  svgClone.removeAttribute('viewBox');
+  svgClone.setAttribute('width', '10000');
+  svgClone.setAttribute('height', '10000');
+  holder.appendChild(svgClone);
+  document.body.appendChild(holder);
+  const raw = [];
+  try {
+    const shapes = svgClone.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon');
+    for (const sh of shapes) {
+      const d = shapeToD(sh);
+      if (!d) continue;
+      let pEl = sh;
+      if (sh.tagName.toLowerCase() !== 'path') {
+        const pe = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        for (let ai = 0; ai < sh.attributes.length; ai++) { const at = sh.attributes[ai]; pe.setAttribute(at.name, at.value); }
+        pe.setAttribute('d', d);
+        sh.replaceWith(pe);
+        pEl = pe;
+      }
+      const L = pEl.getTotalLength();
+      if (!isFinite(L) || L < .5) continue;
+      const ctm = pEl.getCTM() || { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+      const sc = Math.sqrt(Math.abs(ctm.a * ctm.d - ctm.b * ctm.c)) || 1;
+      const nSamp = Math.min(2500, Math.max(24, Math.ceil(L / 1.5)));
+      const step = L / nSamp;
+      const sty = getComputedStyle(pEl);
+      const fillNone = sty.fill === 'none' || sty.fillOpacity === '0';
+      const strokeOn = sty.stroke && sty.stroke !== 'none' && parseFloat(sty.strokeWidth) > 0;
+      const sw = strokeOn ? parseFloat(sty.strokeWidth) : 0;
+      let cur = [], prev = null;
+      const parts = [];
+      for (let j = 0; j <= nSamp; j++) {
+        const pt = pEl.getPointAtLength(j * step);
+        const mp = { x: ctm.a * pt.x + ctm.c * pt.y + ctm.e, y: ctm.b * pt.x + ctm.d * pt.y + ctm.f };
+        if (prev && dist(mp, prev) > step * sc * 6) { if (cur.length > 1) parts.push(cur); cur = []; }
+        cur.push(mp); prev = mp;
+      }
+      if (cur.length > 1) parts.push(cur);
+      for (const pts of parts) {
+        const closed = dist(pts[0], pts[pts.length - 1]) < step * sc * 2.5;
+        if (!fillNone || closed || !strokeOn) raw.push({ pts, open: false, sw: 0 });
+        else raw.push({ pts, open: true, sw: sw * sc });
+      }
+    }
+  } finally { holder.remove(); }
+  if (!raw.length) throw new Error('В SVG не найдено контуров.');
+  const flip = p => ({ x: p.x, y: -p.y });
+  const cs = [];
+  for (const r of raw) {
+    const pts = r.pts.map(flip);
+    if (r.open) {
+      const rib = ribbonPoly(pts, Math.max(1, r.sw));
+      if (rib.length < 3) continue;
+      cs.push({ nodes: smoothNodes(rib, Math.min(smoothF, .4)) });
+    } else {
+      const simp = simplifyClosed(pts, tol);
+      if (simp.length < 3) continue;
+      cs.push({ nodes: smoothNodes(simp, smoothF) });
+    }
+  }
+  const filtered = cs.filter(c => Math.abs(areaStd(flattenContour(c, 6))) > 20);
+  return fitContoursToGlyph(filtered, isLower);
+}
+
+/* ===== Узоры ===== */
+function patternContours(kind, size) {
+  const S = size || 500, cx = 450, cy = 350;
+  const poly = pts => ({ nodes: pts.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })) });
+  const circle = (r, n = 48) => Array.from({ length: n }, (_, i) => { const a = i / n * Math.PI * 2; return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+  const star = (rO, rI, spikes) => Array.from({ length: spikes * 2 }, (_, i) => { const a = i / (spikes * 2) * Math.PI * 2 - Math.PI / 2; const r = i % 2 ? rI : rO; return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+  if (kind === 'star5') return [poly(star(S / 2, S / 4.6, 5))];
+  if (kind === 'star8') return [poly(star(S / 2, S / 3.4, 8))];
+  if (kind === 'ring') return [poly(circle(S / 2)), poly(circle(S / 3.1))];
+  if (kind === 'flower') {
+    const pts = Array.from({ length: 120 }, (_, i) => { const a = i / 120 * Math.PI * 2; const r = S / 2 * (0.62 + 0.38 * Math.cos(a * 6)); return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }; });
+    return [{ nodes: smoothNodes(pts, .8) }];
+  }
+  if (kind === 'heart') {
+    const pts = Array.from({ length: 100 }, (_, i) => {
+      const t = i / 100 * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+      return { x: cx + x * S / 34, y: cy + y * S / 34 };
+    });
+    return [{ nodes: smoothNodes(pts, .8) }];
+  }
+  if (kind === 'diamond') return [poly([{ x: cx, y: cy + S / 2 }, { x: cx + S / 3, y: cy }, { x: cx, y: cy - S / 2 }, { x: cx - S / 3, y: cy }])];
+  if (kind === 'wave') {
+    const top = Array.from({ length: 60 }, (_, i) => ({ x: 100 + i * 12, y: cy + 90 + Math.sin(i / 60 * Math.PI * 4) * 70 }));
+    const bottom = top.map(p => ({ x: p.x, y: p.y - 130 })).reverse();
+    return [{ nodes: smoothNodes(top.concat(bottom), .6) }];
+  }
+  if (kind === 'zigzag') {
+    const top = Array.from({ length: 13 }, (_, i) => ({ x: 90 + i * 60, y: cy + 100 + (i % 2 ? -80 : 80) }));
+    const bottom = top.map(p => ({ x: p.x, y: p.y - 150 })).reverse();
+    return [poly(top.concat(bottom))];
+  }
+  return [];
+}
+
+const FAMILIES = ['Georgia', 'Times New Roman', 'Arial', 'Verdana', 'Courier New', 'Impact', 'Comic Sans MS', 'Trebuchet MS', 'Palatino Linotype', 'Segoe Script', 'Brush Script MT', 'cursive', 'serif', 'sans-serif', 'monospace'];
+const PATTERNS = [['star5', '★ Звезда 5'], ['star8', '✦ Звезда 8'], ['ring', '◎ Кольцо'], ['flower', '✿ Цветок'], ['heart', '♥ Сердце'], ['diamond', '◆ Ромб'], ['wave', '〜 Волна'], ['zigzag', '⩘ Зигзаг']];
+const TOOL_DEFS = [
+  ['select', 'V', 'Выбор / трансформация'],
+  ['node', 'N', 'Узлы и кривые'],
+  ['pen', 'P', 'Перо Безье'],
+  ['brush', 'B', 'Кисть (штрих)'],
+  ['eraser', 'E', 'Ластик'],
+  ['hand', 'H', 'Рука (панорама)']
+];
+
+export default function VectorEditor({ char, glyph, onApply, onClose }) {
+  const canvasRef = useRef(null);
+  const [objects, setObjects] = useState(() => {
+    const list = [];
+    for (const contour of glyph.outlines || []) {
+      if (Array.isArray(contour) && contour.length >= 3) {
+        list.push({ id: uid(), contours: [{ nodes: contour.map(p => ({ x: p.x, y: p.y, hIn: null, hOut: null, smooth: false })) }] });
+      }
+    }
+    return list;
+  });
+  const [tool, setToolState] = useState('select');
+  const [sel, setSel] = useState(null);
+  const [selMode, setSelMode] = useState('scale');
+  const [selNode, setSelNode] = useState(null);
+  const [view, setView] = useState({ ...VIEW0 });
+  const [brushWidth, setBrushWidth] = useState(60);
+  const [eraserR, setEraserR] = useState(45);
+  const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importTab, setImportTab] = useState('pattern');
+  const [symChar, setSymChar] = useState(char === ' ' ? 'A' : char);
+  const [symFamily, setSymFamily] = useState('Georgia');
+  const [symWeight, setSymWeight] = useState('400');
+  const [symItalic, setSymItalic] = useState(false);
+  const [loadedFont, setLoadedFont] = useState(null);
+  const [loadedFontName, setLoadedFontName] = useState('');
+  const [pngSource, setPngSource] = useState(null);
+  const [pngThr, setPngThr] = useState(128);
+  const [pngInvert, setPngInvert] = useState(false);
+  const [pngSimplify, setPngSimplify] = useState(1.6);
+  const [pngSmooth, setPngSmooth] = useState(0.7);
+  const [svgText, setSvgText] = useState('');
+  const [svgTol, setSvgTol] = useState(1.2);
+  const [svgSmooth, setSvgSmooth] = useState(0.5);
+  const [patternKind, setPatternKind] = useState('star5');
+  const [patternSize, setPatternSize] = useState(520);
+  const [previewContours, setPreviewContours] = useState(null);
+  const [, forceRender] = useState(0);
+
+  const stateRef = useRef({});
+  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR };
+  const gestureRef = useRef(null);
+  const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
+  const brushRef = useRef(null);
+  const historyRef = useRef({ u: [], r: [] });
+  const spaceRef = useRef(false);
+  const lastTapRef = useRef({ t: 0, x: 0, y: 0 });
+  const eraserPosRef = useRef(null);
+  const importOpenRef = useRef(false);
+  importOpenRef.current = importOpen;
+
+  const isLower = char.toLowerCase() === char && char.toUpperCase() !== char;
+  const snap = () => clone(stateRef.current.objects);
+  const pushHistory = s => { historyRef.current.u.push(s); if (historyRef.current.u.length > 60) historyRef.current.u.shift(); historyRef.current.r = []; };
+  const rerender = () => forceRender(v => v + 1);
+
+  const commit = useCallback((mutator, snapshot) => {
+    const s = snapshot || clone(stateRef.current.objects);
+    let next = clone(stateRef.current.objects);
+    if (mutator) next = mutator(next) || next;
+    for (const o of next) normalizeObject(o);
+    pushHistory(s);
+    setObjects(next);
+    setMessage('Изменено. «Применить» запишет результат в букву ' + (char === ' ' ? '(пробел)' : char) + '.');
+  }, [char]);
+
+  const undo = () => {
+    const h = historyRef.current;
+    if (!h.u.length) return;
+    h.r.push(clone(stateRef.current.objects));
+    setObjects(h.u.pop());
+    setSel(null); setSelNode(null);
+    rerender();
+  };
+  const redo = () => {
+    const h = historyRef.current;
+    if (!h.r.length) return;
+    h.u.push(clone(stateRef.current.objects));
+    setObjects(h.r.pop());
+    setSel(null); setSelNode(null);
+    rerender();
+  };
+
+  const getObj = list => (list || stateRef.current.objects).find(o => o.id === stateRef.current.sel) || null;
+
+  const posFromEvent = e => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const v = stateRef.current.view;
+    const scale = rect.height / (v.yMax - v.yMin);
+    return { x: (e.clientX - rect.left) / scale + v.xMin, y: v.yMax - (e.clientY - rect.top) / scale };
+  };
+
+  /* ===== Отрисовка ===== */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const v = stateRef.current.view;
+      const scale = rect.height / (v.yMax - v.yMin);
+      const X = x => (x - v.xMin) * scale, Y = y => (v.yMax - y) * scale;
+      ctx.fillStyle = '#111318'; ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = '#171a21';
+      ctx.fillRect(X(0), Y(METRICS.ascender), 900 * scale, (METRICS.ascender - METRICS.descender) * scale);
+      for (const [y, color, label] of [[METRICS.ascender, '#3b82f6', 'верхняя (800)'], [METRICS.capHeight, '#6366f1', 'прописные (700)'], [METRICS.xHeight, '#8b5cf6', 'строчные (500)'], [0, '#22c55e', 'БАЗОВАЯ ЛИНИЯ (0)'], [METRICS.descender, '#ef4444', 'нижняя (-200)']]) {
+        ctx.strokeStyle = color; ctx.lineWidth = y === 0 ? 1.6 : 1;
+        ctx.beginPath(); ctx.moveTo(0, Y(y)); ctx.lineTo(rect.width, Y(y)); ctx.stroke();
+        ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.fillText(label, 8, Y(y) - 4);
+      }
+      ctx.strokeStyle = '#3a3f4b'; ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(0), 0); ctx.lineTo(X(0), rect.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(glyph.advanceWidth || 600), 0); ctx.lineTo(X(glyph.advanceWidth || 600), rect.height); ctx.stroke();
+      ctx.setLineDash([]);
+      const st = stateRef.current;
+      const g = gestureRef.current;
+      const displayContours = o => {
+        if (!g || g.objId !== o.id) return o.contours;
+        if (g.type === 'transform' && g.map) return mapContours(o.contours, g.map);
+        if (g.type === 'node' && g.moved) {
+          const d = g.delta;
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => ci === g.ci && ni === g.ni ? { x: n.x + d.x, y: n.y + d.y, smooth: n.smooth, hIn: n.hIn ? { x: n.hIn.x + d.x, y: n.hIn.y + d.y } : null, hOut: n.hOut ? { x: n.hOut.x + d.x, y: n.hOut.y + d.y } : null } : n) }));
+        }
+        if (g.type === 'handle' && g.pos) {
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => { if (ci !== g.ci || ni !== g.ni) return n; const cp = clone(n); cp[g.which] = { x: g.pos.x, y: g.pos.y }; return cp; }) }));
+        }
+        return o.contours;
+      };
+      const tracePath = c => {
+        const ns = c.nodes, n = ns.length;
+        if (n < 2) return;
+        ctx.moveTo(X(ns[0].x), Y(ns[0].y));
+        for (let i = 0; i < n; i++) {
+          const a = ns[i], b = ns[(i + 1) % n];
+          const cv = segCtrl(a, b);
+          if (cv) ctx.bezierCurveTo(X(cv[0].x), Y(cv[0].y), X(cv[1].x), Y(cv[1].y), X(b.x), Y(b.y));
+          else ctx.lineTo(X(b.x), Y(b.y));
+        }
+        ctx.closePath();
+      };
+      for (const o of st.objects) {
+        ctx.fillStyle = o.id === st.sel ? '#efe9dc' : '#d9d4c8';
+        ctx.beginPath();
+        for (const c of displayContours(o)) tracePath(c);
+        ctx.fill('nonzero');
+      }
+      if (brushRef.current && brushRef.current.length) {
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = Math.max(1, st.brushWidth * scale); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(X(brushRef.current[0].x), Y(brushRef.current[0].y));
+        for (const p of brushRef.current.slice(1)) ctx.lineTo(X(p.x), Y(p.y));
+        ctx.stroke();
+      }
+      const pen = penRef.current;
+      if (st.tool === 'pen' && pen.nodes.length) {
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(X(pen.nodes[0].x), Y(pen.nodes[0].y));
+        for (let i = 1; i < pen.nodes.length; i++) {
+          const a = pen.nodes[i - 1], b = pen.nodes[i], cv = segCtrl(a, b);
+          if (cv) ctx.bezierCurveTo(X(cv[0].x), Y(cv[0].y), X(cv[1].x), Y(cv[1].y), X(b.x), Y(b.y));
+          else ctx.lineTo(X(b.x), Y(b.y));
+        }
+        if (pen.cursor && !pen.dragging) ctx.lineTo(X(pen.cursor.x), Y(pen.cursor.y));
+        ctx.stroke();
+        pen.nodes.forEach((n, i) => {
+          ctx.fillStyle = i === 0 ? '#8ea2ff' : '#fff';
+          ctx.fillRect(X(n.x) - 4, Y(n.y) - 4, 8, 8);
+          ctx.strokeStyle = '#4f46e5'; ctx.strokeRect(X(n.x) - 4, Y(n.y) - 4, 8, 8);
+        });
+      }
+      const so = st.objects.find(o => o.id === st.sel);
+      if (st.tool === 'select' && so) {
+        const bb = bboxOfContours(displayContours(so));
+        if (bb) {
+          ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1.2; ctx.setLineDash([6, 4]);
+          ctx.strokeRect(X(bb.x), Y(bb.y2), bb.w * scale, bb.h * scale);
+          ctx.setLineDash([]);
+          for (const [name, hx, hy] of handlePts(bb)) {
+            const sx = X(hx), sy = Y(hy);
+            ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 1.4;
+            if (st.selMode === 'scale') { ctx.fillRect(sx - 4.5, sy - 4.5, 9, 9); ctx.strokeRect(sx - 4.5, sy - 4.5, 9, 9); }
+            else if (name.length === 2) { ctx.beginPath(); ctx.arc(sx, sy, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+            else { ctx.beginPath(); ctx.moveTo(sx, sy - 5.5); ctx.lineTo(sx + 5.5, sy); ctx.lineTo(sx, sy + 5.5); ctx.lineTo(sx - 5.5, sy); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+          }
+          if (st.selMode === 'rotate') {
+            ctx.fillStyle = '#4f46e5';
+            ctx.beginPath(); ctx.arc(X(bb.cx), Y(bb.cy), 3, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+      if (st.tool === 'node' && so) {
+        const cs = displayContours(so);
+        ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = 1;
+        cs.forEach((c, ci) => {
+          ctx.beginPath(); tracePath(c); ctx.stroke();
+          c.nodes.forEach((n, ni) => {
+            const active = st.selNode && st.selNode.ci === ci && st.selNode.ni === ni;
+            if (active) {
+              for (const w of ['hIn', 'hOut']) if (n[w]) {
+                ctx.strokeStyle = '#9aa3b5'; ctx.beginPath(); ctx.moveTo(X(n.x), Y(n.y)); ctx.lineTo(X(n[w].x), Y(n[w].y)); ctx.stroke();
+                ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4f46e5';
+                ctx.beginPath(); ctx.arc(X(n[w].x), Y(n[w].y), 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+              }
+            }
+            ctx.fillStyle = active ? '#4f46e5' : '#fff';
+            ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 1.1;
+            ctx.fillRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
+            ctx.strokeRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
+          });
+        });
+      }
+      if (st.tool === 'eraser' && eraserPosRef.current) {
+        ctx.strokeStyle = '#ff8585'; ctx.fillStyle = 'rgba(255,133,133,.08)'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(X(eraserPosRef.current.x), Y(eraserPosRef.current.y), st.eraserR * scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+    };
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  });
+
+  /* ===== Попадания ===== */
+  function handlePts(bb) {
+    return [['nw', bb.x, bb.y2], ['n', bb.cx, bb.y2], ['ne', bb.x2, bb.y2], ['e', bb.x2, bb.cy], ['se', bb.x2, bb.y], ['s', bb.cx, bb.y], ['sw', bb.x, bb.y], ['w', bb.x, bb.cy]];
+  }
+  const screenK = () => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return (stateRef.current.view.yMax - stateRef.current.view.yMin) / Math.max(1, rect.height);
+  };
+  function hitHandle(p, bb, k) {
+    for (const [name, hx, hy] of handlePts(bb)) if (Math.abs(p.x - hx) < 9 * k && Math.abs(p.y - hy) < 9 * k) return name;
+    return null;
+  }
+  function hitObject(p, k) {
+    const list = stateRef.current.objects;
+    for (let i = list.length - 1; i >= 0; i--) {
+      let w = 0, near = false;
+      for (const c of list[i].contours) {
+        const f = flattenContour(c, 8);
+        w += windingAt(p, f);
+        if (!near) for (const q of f) { const dx = q.x - p.x, dy = q.y - p.y; if (dx * dx + dy * dy < 16 * k * k) { near = true; break; } }
+      }
+      if (w !== 0 || near) return list[i];
+    }
+    return null;
+  }
+  function hitNode(o, p, r) {
+    for (let ci = 0; ci < o.contours.length; ci++) {
+      const ns = o.contours[ci].nodes;
+      for (let ni = 0; ni < ns.length; ni++) if (Math.abs(p.x - ns[ni].x) < r && Math.abs(p.y - ns[ni].y) < r) return { ci, ni };
+    }
+    return null;
+  }
+  function hitSegment(o, p, tol) {
+    let best = null, bd = tol * tol;
+    o.contours.forEach((c, ci) => {
+      for (const q of flattenContour(c, 5)) {
+        const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+        if (d < bd) { bd = d; best = { ci, seg: q.seg, t: q.t }; }
+      }
+    });
+    return best;
+  }
+  function insertNodeAt(o, at) {
+    const c = o.contours[at.ci], ns = c.nodes, len = ns.length;
+    const a = ns[at.seg], b = ns[(at.seg + 1) % len], t = at.t;
+    const cv = segCtrl(a, b);
+    let nn;
+    if (cv) {
+      const p0 = { x: a.x, y: a.y }, p3 = { x: b.x, y: b.y };
+      const p01 = lerp(p0, cv[0], t), p12 = lerp(cv[0], cv[1], t), p23 = lerp(cv[1], p3, t);
+      const p012 = lerp(p01, p12, t), p123 = lerp(p12, p23, t), m = lerp(p012, p123, t);
+      a.hOut = { x: F(p01.x), y: F(p01.y) };
+      b.hIn = { x: F(p23.x), y: F(p23.y) };
+      nn = { x: F(m.x), y: F(m.y), smooth: true, hIn: { x: F(p012.x), y: F(p012.y) }, hOut: { x: F(p123.x), y: F(p123.y) } };
+    } else {
+      const m = lerp(a, b, t);
+      nn = { x: F(m.x), y: F(m.y), smooth: false, hIn: null, hOut: null };
+    }
+    ns.splice(at.seg + 1, 0, nn);
+    return { ci: at.ci, ni: at.seg + 1 };
+  }
+
+  /* ===== Жесты ===== */
+  const clampAbs = (v, m) => Math.abs(v) < m ? (v < 0 ? -m : m) : v;
+  function bakeGesture(g) {
+    if (!g.moved) return;
+    commit(list => {
+      const ob = list.find(x => x.id === g.objId);
+      if (!ob) return list;
+      if (g.type === 'transform' && g.map) ob.contours = mapContours(ob.contours, g.map);
+      if (g.type === 'node') {
+        const nn = ob.contours[g.ci] && ob.contours[g.ci].nodes[g.ni];
+        if (nn) {
+          nn.x = F(nn.x + g.delta.x); nn.y = F(nn.y + g.delta.y);
+          if (nn.hIn) { nn.hIn.x = F(nn.hIn.x + g.delta.x); nn.hIn.y = F(nn.hIn.y + g.delta.y); }
+          if (nn.hOut) { nn.hOut.x = F(nn.hOut.x + g.delta.x); nn.hOut.y = F(nn.hOut.y + g.delta.y); }
+        }
+      }
+      if (g.type === 'handle' && g.pos) {
+        const nn = ob.contours[g.ci] && ob.contours[g.ci].nodes[g.ni];
+        if (nn) {
+          nn[g.which] = { x: F(g.pos.x), y: F(g.pos.y) };
+          if (nn.smooth && !g.alt) {
+            const other = g.which === 'hIn' ? 'hOut' : 'hIn';
+            const dx = nn.x - g.pos.x, dy = nn.y - g.pos.y;
+            const L = Math.hypot(dx, dy) || 1;
+            const len = nn[other] ? Math.hypot(nn[other].x - nn.x, nn[other].y - nn.y) : L;
+            nn[other] = { x: F(nn.x + dx / L * len), y: F(nn.y + dy / L * len) };
+          }
+        }
+      }
+      return list;
+    }, g.snap);
+  }
+  function startTransform(o, fn) {
+    gestureRef.current = { type: 'transform', snap: snap(), objId: o.id, map: null, moved: false,
+      upd(p, e) { this.map = fn(p, e); this.moved = true; } };
+  }
+  function makeScaleFn(bb, h, p0) {
+    const ax = h.includes('w') ? bb.x2 : h.includes('e') ? bb.x : bb.cx;
+    const ay = h.includes('n') ? bb.y : h.includes('s') ? bb.y2 : bb.cy;
+    const axisX = h.length === 2 || h === 'e' || h === 'w';
+    const axisY = h.length === 2 || h === 'n' || h === 's';
+    const s0x = (p0.x - ax) || .001, s0y = (p0.y - ay) || .001;
+    return (p, e) => {
+      let sx = axisX ? (p.x - ax) / s0x : 1;
+      let sy = axisY ? (p.y - ay) / s0y : 1;
+      if (e.shiftKey && axisX && axisY) { const m = Math.max(Math.abs(sx), Math.abs(sy)); sx = m * (sx < 0 ? -1 : 1); sy = m * (sy < 0 ? -1 : 1); }
+      sx = clampAbs(sx, .02); sy = clampAbs(sy, .02);
+      return q => ({ x: ax + (q.x - ax) * sx, y: ay + (q.y - ay) * sy });
+    };
+  }
+  function selectDown(p, e) {
+    const k = screenK();
+    const so = getObj();
+    if (so) {
+      const bb = bboxOfContours(so.contours);
+      if (bb) {
+        const h = hitHandle(p, bb, k);
+        if (h) {
+          const st = stateRef.current;
+          if (st.selMode === 'scale') startTransform(so, makeScaleFn(bb, h, p));
+          else if (h.length === 2) {
+            if (e.altKey) {
+              const corners = [{ x: bb.x, y: bb.y2 }, { x: bb.x2, y: bb.y2 }, { x: bb.x2, y: bb.y }, { x: bb.x, y: bb.y }];
+              const idx = { nw: 0, ne: 1, se: 2, sw: 3 }[h];
+              startTransform(so, pp => {
+                const cs = corners.slice(); cs[idx] = { x: pp.x, y: pp.y };
+                return q => {
+                  const u = (q.x - bb.x) / bb.w, v = (q.y - bb.y) / bb.h;
+                  return {
+                    x: (1-u)*v*cs[0].x + u*v*cs[1].x + u*(1-v)*cs[2].x + (1-u)*(1-v)*cs[3].x,
+                    y: (1-u)*v*cs[0].y + u*v*cs[1].y + u*(1-v)*cs[2].y + (1-u)*(1-v)*cs[3].y
+                  };
+                };
+              });
+            } else {
+              const c = { x: bb.cx, y: bb.cy }, a0 = Math.atan2(p.y - c.y, p.x - c.x);
+              startTransform(so, (pp, ev) => {
+                let d = Math.atan2(pp.y - c.y, pp.x - c.x) - a0;
+                if (ev.shiftKey) d = Math.round(d / (Math.PI / 12)) * (Math.PI / 12);
+                const M = around(c, mR(d));
+                return q => mApply(M, q);
+              });
+            }
+          } else {
+            const c = { x: bb.cx, y: bb.cy };
+            const horiz = h === 'n' || h === 's';
+            startTransform(so, pp => {
+              let kx = 0, ky = 0;
+              if (horiz) kx = Math.max(-2.5, Math.min(2.5, (pp.x - p.x) / (bb.h / 2)));
+              else ky = Math.max(-2.5, Math.min(2.5, (pp.y - p.y) / (bb.w / 2)));
+              const M = around(c, [1, ky, kx, 1, 0, 0]);
+              return q => mApply(M, q);
+            });
+          }
+          return;
+        }
+      }
+    }
+    const hit = hitObject(p, k);
+    if (hit) {
+      const wasSel = stateRef.current.sel === hit.id;
+      if (!wasSel) { setSel(hit.id); setSelMode('scale'); setSelNode(null); }
+      gestureRef.current = { type: 'moveOrToggle', snap: snap(), objId: hit.id, start: p, moved: false, map: null, toggle: wasSel,
+        upd(pp) {
+          if (dist(pp, this.start) > 3 * k) this.moved = true;
+          if (this.moved) { const dx = pp.x - this.start.x, dy = pp.y - this.start.y; this.map = q => ({ x: q.x + dx, y: q.y + dy }); }
+        } };
+      rerender();
+    } else { setSel(null); setSelNode(null); rerender(); }
+  }
+  function nodeDown(p, e, dbl) {
+    const k = screenK();
+    const so = getObj();
+    if (so) {
+      const st = stateRef.current;
+      if (st.selNode && so.contours[st.selNode.ci] && so.contours[st.selNode.ci].nodes[st.selNode.ni]) {
+        const sn = so.contours[st.selNode.ci].nodes[st.selNode.ni];
+        let handleHit = null;
+        for (const w of ['hIn', 'hOut']) if (!handleHit && sn[w] && dist(p, sn[w]) < 9 * k) handleHit = w;
+        if (handleHit) {
+          gestureRef.current = { type: 'handle', snap: snap(), objId: so.id, ci: st.selNode.ci, ni: st.selNode.ni, which: handleHit, pos: null, alt: false, moved: false,
+            upd(pp, ev) { this.pos = pp; this.alt = ev.altKey; this.moved = true; } };
+          return;
+        }
+      }
+      const nh = hitNode(so, p, 9 * k);
+      if (nh) {
+        if (dbl && st.selNode && st.selNode.ci === nh.ci && st.selNode.ni === nh.ni) {
+          commit(list => {
+            const ob = list.find(x => x.id === so.id);
+            const ns = ob.contours[nh.ci].nodes, n = ns[nh.ni], len = ns.length;
+            n.smooth = !n.smooth;
+            if (n.smooth) {
+              const prev = ns[(nh.ni - 1 + len) % len], next = ns[(nh.ni + 1) % len];
+              const tx = (next.x - prev.x) / 5, ty = (next.y - prev.y) / 5;
+              n.hOut = { x: F(n.x + tx), y: F(n.y + ty) };
+              n.hIn = { x: F(n.x - tx), y: F(n.y - ty) };
+            }
+            return list;
+          });
+          return;
+        }
+        setSelNode(nh);
+        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, ci: nh.ci, ni: nh.ni, start: p, delta: { x: 0, y: 0 }, moved: false,
+          upd(pp) { this.delta = { x: pp.x - this.start.x, y: pp.y - this.start.y }; this.moved = Math.hypot(this.delta.x, this.delta.y) > .5; } };
+        rerender();
+        return;
+      }
+      const sh = hitSegment(so, p, 7 * k);
+      if (sh) {
+        if (sh.t < .1 || sh.t > .9) {
+          const len = so.contours[sh.ci].nodes.length;
+          setSelNode({ ci: sh.ci, ni: (sh.seg + (sh.t > .5 ? 1 : 0)) % len });
+          rerender();
+          return;
+        }
+        let inserted = null;
+        commit(list => {
+          const ob = list.find(x => x.id === so.id);
+          inserted = insertNodeAt(ob, sh);
+          return list;
+        });
+        setSelNode(inserted);
+        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, ci: inserted.ci, ni: inserted.ni, start: p, delta: { x: 0, y: 0 }, moved: false,
+          upd(pp) { this.delta = { x: pp.x - this.start.x, y: pp.y - this.start.y }; this.moved = Math.hypot(this.delta.x, this.delta.y) > .5; } };
+        return;
+      }
+    }
+    const hit = hitObject(p, k);
+    if (hit) { setSel(hit.id); setSelNode(null); rerender(); }
+  }
+
+  /* ===== Перо / кисть / ластик ===== */
+  function finishPen() {
+    const pen = penRef.current;
+    if (pen.nodes.length >= 3) {
+      const nodes = pen.nodes;
+      commit(list => {
+        const target = list.find(o => o.id === stateRef.current.sel);
+        if (target) target.contours.push({ nodes });
+        else { const no = { id: uid(), contours: [{ nodes }] }; list.push(no); setSel(no.id); }
+        return list;
+      });
+    }
+    pen.nodes = []; pen.dragging = false; pen.dragNode = null;
+    rerender();
+  }
+  function penDown(p, dbl) {
+    const k = screenK();
+    const pen = penRef.current;
+    if (dbl) { finishPen(); return; }
+    if (pen.nodes.length >= 3 && dist(p, pen.nodes[0]) < 12 * k) { finishPen(); return; }
+    const n = { x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false };
+    pen.nodes.push(n); pen.dragging = true; pen.dragNode = n;
+    rerender();
+  }
+  function endBrush() {
+    const pts = brushRef.current;
+    brushRef.current = null;
+    if (pts && pts.length > 1) {
+      const contours = strokeToContours(pts, stateRef.current.brushWidth / 2);
+      commit(list => {
+        const cs = contours.map(c => ({ nodes: c.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })) }));
+        const target = list.find(o => o.id === stateRef.current.sel);
+        if (target) target.contours.push(...cs);
+        else { const no = { id: uid(), contours: cs }; list.push(no); setSel(no.id); }
+        return list;
+      });
+    }
+    rerender();
+  }
+  function eraseAt(p) {
+    const r2 = stateRef.current.eraserR ** 2;
+    let changed = false;
+    const list = stateRef.current.objects;
+    for (let oi = list.length - 1; oi >= 0; oi--) {
+      const o = list[oi], keep = [];
+      let touched = false;
+      for (const c of o.contours) {
+        const pts = flattenContour(c, 5);
+        if (pts.length < 3) { keep.push(c); continue; }
+        const inside = pts.map(q => (q.x - p.x) ** 2 + (q.y - p.y) ** 2 < r2);
+        const any = inside.some(Boolean);
+        if (!any) { keep.push(c); continue; }
+        touched = true;
+        if (inside.every(Boolean)) continue;
+        const start = inside.indexOf(true);
+        let run = [];
+        for (let j = 1; j <= pts.length; j++) {
+          const idx = (start + j) % pts.length;
+          if (!inside[idx]) run.push({ x: pts[idx].x, y: pts[idx].y });
+          if (inside[idx] || j === pts.length) {
+            if (run.length >= 3) {
+              const nodes = smoothNodes(run, .5);
+              nodes[0].hIn = null; nodes[0].smooth = false;
+              nodes[nodes.length - 1].hOut = null; nodes[nodes.length - 1].smooth = false;
+              const cc = { nodes };
+              if (Math.abs(areaStd(flattenContour(cc, 8))) > 40) keep.push(cc);
+            }
+            run = [];
+          }
+        }
+      }
+      if (touched) {
+        changed = true;
+        o.contours = keep;
+        if (!keep.length) { list.splice(oi, 1); if (stateRef.current.sel === o.id) { setSel(null); setSelNode(null); } }
+      }
+    }
+    return changed;
+  }
+
+  /* ===== События указателя ===== */
+  const onPointerDown = e => {
+    if (importOpenRef.current) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = posFromEvent(e);
+    const now = performance.now();
+    const lt = lastTapRef.current;
+    const dbl = now - lt.t < 350 && Math.hypot(p.x - lt.x, p.y - lt.y) < 14 * screenK();
+    lastTapRef.current = { t: now, x: p.x, y: p.y };
+    const st = stateRef.current;
+    if (st.tool === 'hand' || spaceRef.current || e.button === 1) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      gestureRef.current = { type: 'pan', v0: { ...st.view }, sx: e.clientX, sy: e.clientY, rectH: rect.height,
+        upd(pp, ev) {
+          const scale = this.rectH / (this.v0.yMax - this.v0.yMin);
+          setView({ ...this.v0, xMin: this.v0.xMin - (ev.clientX - this.sx) / scale, yMin: this.v0.yMin + (ev.clientY - this.sy) / scale, xMax: this.v0.xMax - (ev.clientX - this.sx) / scale, yMax: this.v0.yMax + (ev.clientY - this.sy) / scale });
+        } };
+      return;
+    }
+    if (e.button === 2) return;
+    if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
+    else if (st.tool === 'eraser') {
+      gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
+        upd(pp) {
+          const d = dist(pp, this.last), steps = Math.max(1, Math.ceil(d / (stateRef.current.eraserR * .4)));
+          for (let i = 1; i <= steps; i++) {
+            if (eraseAt({ x: this.last.x + (pp.x - this.last.x) * i / steps, y: this.last.y + (pp.y - this.last.y) * i / steps })) this.changed = true;
+          }
+          this.last = pp;
+        } };
+      if (eraseAt(p)) gestureRef.current.changed = true;
+      rerender();
+    }
+    else if (st.tool === 'pen') penDown(p, dbl);
+    else if (st.tool === 'select') selectDown(p, e);
+    else if (st.tool === 'node') nodeDown(p, e, dbl);
+  };
+  const onPointerMove = e => {
+    if (importOpenRef.current) return;
+    const p = posFromEvent(e);
+    const st = stateRef.current;
+    if (st.tool === 'eraser') eraserPosRef.current = p;
+    const g = gestureRef.current;
+    if (g) { e.preventDefault(); g.upd(p, e); rerender(); return; }
+    if (brushRef.current) {
+      e.preventDefault();
+      const pts = brushRef.current, last = pts[pts.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) > 3) pts.push(p);
+      rerender();
+      return;
+    }
+    if (st.tool === 'pen') {
+      const pen = penRef.current;
+      if (pen.dragging && pen.dragNode) {
+        const n = pen.dragNode;
+        if (Math.hypot(p.x - n.x, p.y - n.y) > 3) {
+          n.hOut = { x: F(p.x), y: F(p.y) };
+          n.hIn = { x: F(2 * n.x - p.x), y: F(2 * n.y - p.y) };
+          n.smooth = true;
+        }
+      } else pen.cursor = p;
+    }
+    rerender();
+  };
+  const onPointerUp = () => {
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    if (g) {
+      if (g.type === 'erase') { if (g.changed) { pushHistory(g.snap); setObjects(clone(stateRef.current.objects)); setMessage('Ластик применён.'); } }
+      else if (g.type === 'moveOrToggle') {
+        if (g.moved && g.map) bakeGesture({ ...g, type: 'transform' });
+        else if (g.toggle) setSelMode(m => m === 'scale' ? 'rotate' : 'scale');
+      }
+      else if (g.type !== 'pan') bakeGesture(g);
+    }
+    if (brushRef.current) endBrush();
+    const pen = penRef.current;
+    if (pen.dragging) { pen.dragging = false; pen.dragNode = null; }
+    rerender();
+  };
+  const onWheel = e => {
+    e.preventDefault();
+    const p = posFromEvent(e);
+    const v = stateRef.current.view;
+    const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+    const span = (v.yMax - v.yMin) * factor;
+    if (span < 150 || span > 6000) return;
+    const f = span / (v.yMax - v.yMin);
+    setView({
+      xMin: p.x - (p.x - v.xMin) * f, xMax: p.x + (v.xMax - p.x) * f,
+      yMin: p.y - (p.y - v.yMin) * f, yMax: p.y + (v.yMax - p.y) * f
+    });
+  };
+
+  /* ===== Действия панели свойств ===== */
+  const transformSel = fn => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      ob.contours = mapContours(ob.contours, fn);
+      return list;
+    });
+  };
+  const selBBox = () => { const so = getObj(); return so ? bboxOfContours(so.contours) : null; };
+  const duplicateSel = () => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const cp = clone(so);
+      cp.id = uid();
+      cp.contours = mapContours(cp.contours, q => ({ x: q.x + 40, y: q.y - 40 }));
+      list.push(cp);
+      setSel(cp.id);
+      return list;
+    });
+  };
+  const deleteSel = () => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const i = list.findIndex(x => x.id === so.id);
+      if (i >= 0) list.splice(i, 1);
+      setSel(null); setSelNode(null);
+      return list;
+    });
+  };
+  const flipSel = horiz => {
+    const bb = selBBox();
+    if (!bb) return;
+    transformSel(q => horiz ? { x: 2 * bb.cx - q.x, y: q.y } : { x: q.x, y: 2 * bb.cy - q.y });
+  };
+  const orderSel = front => {
+    const so = getObj();
+    if (!so) return;
+    commit(list => {
+      const i = list.findIndex(x => x.id === so.id);
+      list.splice(i, 1);
+      if (front) list.push(so); else list.unshift(so);
+      return list;
+    });
+  };
+  const rotateSel = deg => {
+    const bb = selBBox();
+    if (!bb || !deg) return;
+    const M = around({ x: bb.cx, y: bb.cy }, mR(deg * Math.PI / 180));
+    transformSel(q => mApply(M, q));
+  };
+  const alignBaseline = () => {
+    const bb = selBBox();
+    if (!bb) return;
+    const dy = -bb.y;
+    transformSel(q => ({ x: q.x, y: q.y + dy }));
+    setMessage('Низ объекта поставлен на базовую линию.');
+  };
+  const centerGlyph = () => {
+    const bb = selBBox();
+    if (!bb) return;
+    const dx = 450 - bb.cx;
+    transformSel(q => ({ x: q.x + dx, y: q.y }));
+  };
+  const fitHeight = target => {
+    const bb = selBBox();
+    if (!bb) return;
+    const s = target / bb.h;
+    transformSel(q => ({ x: bb.x + (q.x - bb.x) * s, y: bb.y + (q.y - bb.y) * s }));
+    setMessage(`Высота подогнана под ${target} единиц.`);
+  };
+  const addNodeAfter = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    let inserted = null;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      inserted = insertNodeAt(ob, { ci: st.selNode.ci, seg: st.selNode.ni, t: .5 });
+      return list;
+    });
+    setSelNode(inserted);
+  };
+  const deleteNode = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const c = ob.contours[st.selNode.ci];
+      if (!c) return list;
+      c.nodes.splice(st.selNode.ni, 1);
+      if (c.nodes.length < 3) ob.contours.splice(st.selNode.ci, 1);
+      if (!ob.contours.length) { const i = list.findIndex(x => x.id === ob.id); list.splice(i, 1); setSel(null); }
+      setSelNode(null);
+      return list;
+    });
+  };
+  const toggleSmoothSel = () => {
+    const so = getObj();
+    const st = stateRef.current;
+    if (!so || !st.selNode) return;
+    commit(list => {
+      const ob = list.find(x => x.id === so.id);
+      const ns = ob.contours[st.selNode.ci].nodes, n = ns[st.selNode.ni], len = ns.length;
+      n.smooth = !n.smooth;
+      if (n.smooth) {
+        const prev = ns[(st.selNode.ni - 1 + len) % len], next = ns[(st.selNode.ni + 1) % len];
+        const tx = (next.x - prev.x) / 5, ty = (next.y - prev.y) / 5;
+        n.hOut = { x: F(n.x + tx), y: F(n.y + ty) };
+        n.hIn = { x: F(n.x - tx), y: F(n.y - ty) };
+      }
+      return list;
+    });
+  };
+
+  /* ===== Применение к букве ===== */
+  const applyToGlyph = () => {
+    const all = [];
+    for (const o of objects) {
+      normalizeObject(o);
+      for (const c of o.contours) {
+        const flat = flattenContour(c, 4).map(p => ({ x: F(p.x), y: F(p.y) }));
+        if (flat.length >= 3 && Math.abs(areaStd(flat)) > 20) all.push(flat);
+      }
+    }
+    let advanceWidth = glyph.advanceWidth || 600;
+    if (all.length) {
+      let maxX = -Infinity;
+      for (const c of all) for (const p of c) if (p.x > maxX) maxX = p.x;
+      advanceWidth = Math.max(250, Math.min(1400, Math.round(maxX + 60)));
+    }
+    onApply({ outlines: all, advanceWidth });
+  };
+
+  /* ===== Импорт ===== */
+  const regenPreview = useCallback(() => {
+    try {
+      let cs = null;
+      if (importTab === 'pattern') cs = patternContours(patternKind, patternSize);
+      else if (importTab === 'symbol') cs = loadedFont && symFamily === '__custom__' ? symbolFromFontFile(loadedFont, [...(symChar || char)][0] || char) : symbolFromSystem([...(symChar || char)][0] || char, symFamily, symWeight, symItalic);
+      else if (importTab === 'png' && pngSource) cs = contoursFromImage(pngSource, pngThr, pngInvert, pngSimplify, pngSmooth, isLower);
+      else if (importTab === 'svg' && svgText.trim()) cs = contoursFromSvg(svgText, svgTol, svgSmooth, isLower);
+      if (cs && cs.length) {
+        const tmp = { id: 'preview', contours: cs };
+        normalizeObject(tmp);
+        setPreviewContours(tmp.contours);
+      } else setPreviewContours(null);
+    } catch (err) {
+      setPreviewContours(null);
+      setMessage(err.message || String(err));
+    }
+  }, [importTab, patternKind, patternSize, symChar, symFamily, symWeight, symItalic, loadedFont, pngSource, pngThr, pngInvert, pngSimplify, pngSmooth, svgText, svgTol, svgSmooth, char, isLower]);
+  useEffect(() => { if (importOpen) { const t = setTimeout(regenPreview, 120); return () => clearTimeout(t); } }, [importOpen, regenPreview]);
+
+  const insertPreview = () => {
+    if (!previewContours) return;
+    const cs = clone(previewContours);
+    commit(list => {
+      const no = { id: uid(), contours: cs };
+      list.push(no);
+      setSel(no.id);
+      return list;
+    });
+    setImportOpen(false);
+    setToolState('select');
+    setMessage('Вставлено и привязано к направляющим. Тяните ручки для размера; повторный клик — поворот/скос.');
+  };
+  const loadPngFile = file => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, 400 / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s));
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      setPngSource({ data: ctx.getImageData(0, 0, w, h).data, w, h });
+      URL.revokeObjectURL(url);
+      setImportTab('png'); setImportOpen(true);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); setMessage('Не удалось открыть картинку.'); };
+    img.src = url;
+  };
+  const loadSvgFile = file => {
+    const r = new FileReader();
+    r.onload = () => { setSvgText(String(r.result)); setImportTab('svg'); setImportOpen(true); };
+    r.readAsText(file);
+  };
+  const loadFontFile = async file => {
+    try {
+      const buf = await file.arrayBuffer();
+      const font = opentype.parse(buf);
+      setLoadedFont(font);
+      const name = (font.names && font.names.fontFamily && (font.names.fontFamily.en || font.names.fontFamily.ru)) || file.name;
+      setLoadedFontName(name);
+      setSymFamily('__custom__');
+    } catch (err) { setMessage('Не удалось прочитать шрифт: ' + (err.message || err)); }
+  };
+
+  /* ===== Клавиатура ===== */
+  useEffect(() => {
+    const down = e => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
+      if (e.key === 'Escape') {
+        if (importOpenRef.current) { setImportOpen(false); return; }
+        if (typing) { e.target.blur(); return; }
+        if (penRef.current.nodes.length) { penRef.current.nodes = []; rerender(); return; }
+        onClose();
+        return;
+      }
+      if (typing || importOpenRef.current) return;
+      if (e.code === 'Space') { spaceRef.current = true; e.preventDefault(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyD') { e.preventDefault(); duplicateSel(); return; }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (stateRef.current.tool === 'node' && stateRef.current.selNode) deleteNode();
+        else deleteSel();
+        return;
+      }
+      if (e.key === 'Enter' && stateRef.current.tool === 'pen') { finishPen(); return; }
+      if (e.key.startsWith('Arrow') && getObj()) {
+        e.preventDefault();
+        const s = e.shiftKey ? 20 : 4;
+        const dx = e.key === 'ArrowLeft' ? -s : e.key === 'ArrowRight' ? s : 0;
+        const dy = e.key === 'ArrowUp' ? s : e.key === 'ArrowDown' ? -s : 0;
+        transformSel(q => ({ x: q.x + dx, y: q.y + dy }));
+        return;
+      }
+      const tools = { KeyV: 'select', KeyN: 'node', KeyP: 'pen', KeyB: 'brush', KeyE: 'eraser', KeyH: 'hand' };
+      if (tools[e.code] && !e.ctrlKey && !e.metaKey && !e.altKey) { setToolState(tools[e.code]); penRef.current.nodes = []; rerender(); }
+    };
+    const up = e => { if (e.code === 'Space') spaceRef.current = false; };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  });
+
+  /* ===== Мини-превью импорта ===== */
+  const previewSvg = () => {
+    if (!previewContours) return null;
+    let d = '';
+    for (const c of previewContours) {
+      const ns = c.nodes, n = ns.length;
+      if (n < 2) continue;
+      d += `M ${F(ns[0].x)} ${F(-ns[0].y)}`;
+      for (let i = 0; i < n; i++) {
+        const a = ns[i], b = ns[(i + 1) % n], cv = segCtrl(a, b);
+        if (cv) d += ` C ${F(cv[0].x)} ${F(-cv[0].y)} ${F(cv[1].x)} ${F(-cv[1].y)} ${F(b.x)} ${F(-b.y)}`;
+        else d += ` L ${F(b.x)} ${F(-b.y)}`;
+      }
+      d += ' Z';
+    }
+    return <svg viewBox="-60 -840 1000 1100" className="ve-preview-svg">
+      <rect x="0" y="-800" width="900" height="1000" fill="#f4f1ea"/>
+      {[[-800, '#3b82f6'], [-700, '#6366f1'], [-500, '#8b5cf6'], [0, '#22c55e'], [200, '#ef4444']].map(([y, color]) => <line key={y} x1="-60" y1={y} x2="940" y2={y} stroke={color} strokeWidth={y === 0 ? 3 : 1.5}/>)}
+      <path d={d} fill="#20242d" fillRule="nonzero"/>
+    </svg>;
+  };
+
+  const bb = selBBox();
+  const st = stateRef.current;
+  const setTool = t => { setToolState(t); penRef.current.nodes = []; brushRef.current = null; eraserPosRef.current = null; rerender(); };
+
+  return <div className="ve-overlay">
+    <div className="ve-window">
+      <div className="ve-titlebar">
+        <strong>Векторный редактор — символ «{char === ' ' ? '␠' : char}»</strong>
+        <span className="ve-title-note">Объекты привязаны к направляющим шрифта · всё сохраняется в букву</span>
+        <button className="button" onClick={onClose}>✕ Закрыть</button>
+      </div>
+
+      <div className="ve-propertybar">
+        <button className="button primary" onClick={() => { setImportOpen(true); setImportTab('pattern'); }}>📥 Вставить</button>
+        <span className="ve-sep"/>
+        {tool === 'select' && <>
+          <label>X<input type="number" value={bb ? Math.round(bb.x) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && isFinite(v)) { const dx = v - bb.x; transformSel(q => ({ x: q.x + dx, y: q.y })); } }}/></label>
+          <label>Y<input type="number" value={bb ? Math.round(bb.y) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && isFinite(v)) { const dy = v - bb.y; transformSel(q => ({ x: q.x, y: q.y + dy })); } }}/></label>
+          <label>Ш<input type="number" min="1" value={bb ? Math.round(bb.w) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && v > 0) { const s = v / bb.w; transformSel(q => ({ x: bb.x + (q.x - bb.x) * s, y: q.y })); } }}/></label>
+          <label>В<input type="number" min="1" value={bb ? Math.round(bb.h) : ''} disabled={!bb} onChange={e => { const v = Number(e.target.value); if (bb && v > 0) { const s = v / bb.h; transformSel(q => ({ x: q.x, y: bb.y + (q.y - bb.y) * s })); } }}/></label>
+          <label>°<input type="number" step="5" defaultValue={0} disabled={!bb} onChange={e => { const v = Number(e.target.value); e.target.value = 0; rotateSel(v); }}/></label>
+          <button className="button" disabled={!bb} onClick={duplicateSel} title="Дублировать (Ctrl+D)">⧉</button>
+          <button className="button" disabled={!bb} onClick={() => flipSel(true)} title="Отразить по горизонтали">⇋</button>
+          <button className="button" disabled={!bb} onClick={() => flipSel(false)} title="Отразить по вертикали">⇅</button>
+          <button className="button" disabled={!bb} onClick={() => orderSel(false)} title="На задний план">⬇</button>
+          <button className="button" disabled={!bb} onClick={() => orderSel(true)} title="На передний план">⬆</button>
+          <button className="button" disabled={!bb} onClick={alignBaseline} title="Поставить низ на базовую линию">⌖ База</button>
+          <button className="button" disabled={!bb} onClick={centerGlyph} title="Центрировать по полю">↔ Центр</button>
+          <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.capHeight)} title="Высота прописной (700)">↕ 700</button>
+          <button className="button" disabled={!bb} onClick={() => fitHeight(METRICS.xHeight)} title="Высота строчной (500)">↕ 500</button>
+          <button className="button danger" disabled={!bb} onClick={deleteSel} title="Удалить (Delete)">🗑</button>
+        </>}
+        {tool === 'node' && <>
+          <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
+          <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
+          <button className="button" disabled={!st.selNode} onClick={toggleSmoothSel} title="Угол/гладкий (или двойной клик по узлу)">◇/◆</button>
+          <span className="ve-hint">клик по линии — новый узел · тяни узлы и рычаги · Alt+рычаг — излом</span>
+        </>}
+        {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
+        {tool === 'brush' && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
+        {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
+        {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
+        <span className="ve-flex"/>
+        <button className="button" onClick={undo} title="Ctrl+Z">↩</button>
+        <button className="button" onClick={redo} title="Ctrl+Y">↪</button>
+        <button className="button" onClick={() => setView({ ...VIEW0 })} title="Показать всё поле">⤢</button>
+        <button className="button primary" onClick={applyToGlyph} title="Записать объекты в букву и вернуться">✔ Применить к букве</button>
+      </div>
+
+      <div className="ve-body">
+        <div className="ve-toolbox">
+          {TOOL_DEFS.map(([t, key, title]) => <button key={t} className={`ve-tool ${tool === t ? 'active' : ''}`} title={`${title} (${key})`} onClick={() => setTool(t)}>
+            {t === 'select' ? '➤' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
+            <small>{key}</small>
+          </button>)}
+        </div>
+        <div className="ve-canvas-wrap" onDragOver={e => e.preventDefault()} onDrop={e => {
+          e.preventDefault();
+          const f = e.dataTransfer.files && e.dataTransfer.files[0];
+          if (!f) return;
+          if (/svg/.test(f.type) || /\.svg$/i.test(f.name)) loadSvgFile(f);
+          else if (/^image\//.test(f.type)) loadPngFile(f);
+        }}>
+          <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onWheel={onWheel} onContextMenu={e => e.preventDefault()} style={{ touchAction: 'none' }}/>
+        </div>
+      </div>
+      <div className="ve-status">{message}</div>
+
+      {importOpen && <div className="ve-modal-backdrop" onPointerDown={e => { if (e.target === e.currentTarget) setImportOpen(false); }}>
+        <div className="ve-modal">
+          <div className="ve-modal-head"><strong>📥 Вставить в символ «{char === ' ' ? '␠' : char}»</strong><button className="button" onClick={() => setImportOpen(false)}>✕</button></div>
+          <div className="ve-tabs">
+            {[['pattern', 'Узор'], ['symbol', 'Буква / знак'], ['png', 'Картинка'], ['svg', 'SVG']].map(([t, label]) => <button key={t} className={importTab === t ? 'active' : ''} onClick={() => setImportTab(t)}>{label}</button>)}
+          </div>
+          <div className="ve-modal-body">
+            <div className="ve-import-controls">
+              {importTab === 'pattern' && <>
+                <label>Узор<select value={patternKind} onChange={e => setPatternKind(e.target.value)}>{PATTERNS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}</select></label>
+                <label>Размер: {patternSize}<input type="range" min="200" max="800" step="20" value={patternSize} onChange={e => setPatternSize(Number(e.target.value))}/></label>
+                <p className="ve-note">Орнамент вставляется как редактируемый векторный объект: масштаб, поворот, скос, узлы — как в Corel.</p>
+              </>}
+              {importTab === 'symbol' && <>
+                <label>Символ<input type="text" maxLength={2} value={symChar} onChange={e => setSymChar(e.target.value)}/></label>
+                <label>Шрифт<select value={symFamily} onChange={e => setSymFamily(e.target.value)}>
+                  {FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
+                  {loadedFont && <option value="__custom__">📄 {loadedFontName}</option>}
+                </select></label>
+                <label>Насыщенность<select value={symWeight} onChange={e => setSymWeight(e.target.value)}><option value="400">Обычная</option><option value="700">Жирная</option></select></label>
+                <label className="ve-check"><input type="checkbox" checked={symItalic} onChange={e => setSymItalic(e.target.checked)}/> Курсив</label>
+                <label className="button">🔤 Свой TTF/OTF…<input type="file" accept=".ttf,.otf,.woff" hidden onChange={e => { if (e.target.files[0]) loadFontFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <p className="ve-note">Из файла шрифта контур берётся точный; системный шрифт обводится автоматически. Высота подгоняется под {isLower ? 'строчные (500)' : 'прописные (700)'}, низ — на базовую линию.</p>
+              </>}
+              {importTab === 'png' && <>
+                <label className="button">Выбрать PNG/JPG…<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { if (e.target.files[0]) loadPngFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <label>Порог: {pngThr}<input type="range" min="10" max="245" value={pngThr} onChange={e => setPngThr(Number(e.target.value))}/></label>
+                <label>Упрощение: {pngSimplify}<input type="range" min="0.4" max="4" step="0.2" value={pngSimplify} onChange={e => setPngSimplify(Number(e.target.value))}/></label>
+                <label>Сглаживание: {pngSmooth}<input type="range" min="0" max="1.5" step="0.1" value={pngSmooth} onChange={e => setPngSmooth(Number(e.target.value))}/></label>
+                <label className="ve-check"><input type="checkbox" checked={pngInvert} onChange={e => setPngInvert(e.target.checked)}/> Инвертировать (светлое на тёмном)</label>
+                <p className="ve-note">Можно также перетащить файл прямо на холст.</p>
+              </>}
+              {importTab === 'svg' && <>
+                <label className="button">Выбрать SVG…<input type="file" accept=".svg,image/svg+xml" hidden onChange={e => { if (e.target.files[0]) loadSvgFile(e.target.files[0]); e.target.value = ''; }}/></label>
+                <textarea rows={4} placeholder="…или вставьте код SVG сюда" value={svgText} onChange={e => setSvgText(e.target.value)}/>
+                <label>Упрощение: {svgTol}<input type="range" min="0.2" max="4" step="0.2" value={svgTol} onChange={e => setSvgTol(Number(e.target.value))}/></label>
+                <label>Сглаживание: {svgSmooth}<input type="range" min="0" max="1.5" step="0.1" value={svgSmooth} onChange={e => setSvgSmooth(Number(e.target.value))}/></label>
+              </>}
+            </div>
+            <div className="ve-import-preview">
+              {previewSvg() || <div className="ve-preview-empty">Предпросмотр появится здесь</div>}
+            </div>
+          </div>
+          <div className="ve-modal-foot">
+            <button className="button" onClick={() => setImportOpen(false)}>Отмена</button>
+            <button className="button primary" disabled={!previewContours} onClick={insertPreview}>Вставить в редактор</button>
+          </div>
+        </div>
+      </div>}
+    </div>
+  </div>;
+       }
