@@ -355,7 +355,7 @@ function ribbonPoly(pts, w) {
   }
   return L.concat(R.reverse());
 }
-function createShapeObject(tool, start, end, width) {
+function createShapeObject(tool, start, end, width, sides = 6) {
   const left = Math.min(start.x, end.x), right = Math.max(start.x, end.x);
   const bottom = Math.min(start.y, end.y), top = Math.max(start.y, end.y);
   const w = right - left, h = top - bottom;
@@ -363,6 +363,7 @@ function createShapeObject(tool, start, end, width) {
   let points;
   if (tool === 'rect') points = [{x:left,y:bottom},{x:right,y:bottom},{x:right,y:top},{x:left,y:top}];
   else if (tool === 'ellipse') points = Array.from({length:64}, (_,i) => { const a=i/64*Math.PI*2; return {x:(left+right)/2+Math.cos(a)*w/2,y:(bottom+top)/2+Math.sin(a)*h/2}; });
+  else if (tool === 'polygon') points = Array.from({length:Math.max(3,Math.min(12,Math.round(sides)))}, (_,i) => { const a=-Math.PI/2+i/Math.max(3,Math.min(12,Math.round(sides)))*Math.PI*2; return {x:(left+right)/2+Math.cos(a)*w/2,y:(bottom+top)/2+Math.sin(a)*h/2}; });
   else if (tool === 'line') {
     if (Math.hypot(end.x-start.x,end.y-start.y) < 2) return null;
     points = ribbonPoly([start,end], Math.max(8, width));
@@ -484,6 +485,7 @@ const TOOL_DEFS = [
   ['line', 'L', 'Прямая линия'],
   ['rect', 'R', 'Прямоугольник'],
   ['ellipse', 'O', 'Овал / эллипс'],
+  ['polygon', 'G', 'Многоугольник'],
   ['node', 'N', 'Узлы и кривые'],
   ['pen', 'P', 'Перо Безье'],
   ['brush', 'B', 'Кисть (штрих)'],
@@ -519,6 +521,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [selNode, setSelNode] = useState(null);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
+  const [polygonSides, setPolygonSides] = useState(6);
+  const [showGuides, setShowGuides] = useState(true);
+  const [showGrid, setShowGrid] = useState(false);
   const [eraserR, setEraserR] = useState(45);
   const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
   const [importOpen, setImportOpen] = useState(false);
@@ -543,7 +548,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR };
+  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR, polygonSides, showGuides, showGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
   const brushRef = useRef(null);
@@ -614,15 +619,24 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       ctx.fillStyle = '#111318'; ctx.fillRect(0, 0, rect.width, rect.height);
       ctx.fillStyle = '#171a21';
       ctx.fillRect(X(0), Y(METRICS.ascender), 900 * scale, (METRICS.ascender - METRICS.descender) * scale);
-      for (const [y, color, label] of [[METRICS.ascender, '#3b82f6', 'верхняя (800)'], [METRICS.capHeight, '#6366f1', 'прописные (700)'], [METRICS.xHeight, '#8b5cf6', 'строчные (500)'], [0, '#22c55e', 'БАЗОВАЯ ЛИНИЯ (0)'], [METRICS.descender, '#ef4444', 'нижняя (-200)']]) {
-        ctx.strokeStyle = color; ctx.lineWidth = y === 0 ? 1.6 : 1;
-        ctx.beginPath(); ctx.moveTo(0, Y(y)); ctx.lineTo(rect.width, Y(y)); ctx.stroke();
-        ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.fillText(label, 8, Y(y) - 4);
+      const st = stateRef.current;
+      if (st.showGrid) {
+        ctx.save(); ctx.strokeStyle = '#343a46'; ctx.globalAlpha = .42; ctx.lineWidth = 1;
+        for (let x = Math.ceil(v.xMin / 100) * 100; x <= v.xMax; x += 100) { ctx.beginPath(); ctx.moveTo(X(x), 0); ctx.lineTo(X(x), rect.height); ctx.stroke(); }
+        for (let y = Math.ceil(v.yMin / 100) * 100; y <= v.yMax; y += 100) { ctx.beginPath(); ctx.moveTo(0, Y(y)); ctx.lineTo(rect.width, Y(y)); ctx.stroke(); }
+        ctx.restore();
       }
-      ctx.strokeStyle = '#3a3f4b'; ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(X(0), 0); ctx.lineTo(X(0), rect.height); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(X(glyph.advanceWidth || 600), 0); ctx.lineTo(X(glyph.advanceWidth || 600), rect.height); ctx.stroke();
-      ctx.setLineDash([]);
+      if (st.showGuides) {
+        for (const [y, color, label] of [[METRICS.ascender, '#3b82f6', 'верхняя (800)'], [METRICS.capHeight, '#6366f1', 'прописные (700)'], [METRICS.xHeight, '#8b5cf6', 'строчные (500)'], [0, '#22c55e', 'БАЗОВАЯ ЛИНИЯ (0)'], [METRICS.descender, '#ef4444', 'нижняя (-200)']]) {
+          ctx.strokeStyle = color; ctx.lineWidth = y === 0 ? 1.6 : 1;
+          ctx.beginPath(); ctx.moveTo(0, Y(y)); ctx.lineTo(rect.width, Y(y)); ctx.stroke();
+          ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.fillText(label, 8, Y(y) - 4);
+        }
+        ctx.strokeStyle = '#3a3f4b'; ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(X(0), 0); ctx.lineTo(X(0), rect.height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(X(glyph.advanceWidth || 600), 0); ctx.lineTo(X(glyph.advanceWidth || 600), rect.height); ctx.stroke();
+        ctx.setLineDash([]);
+      }
       const st = stateRef.current;
       const g = gestureRef.current;
       const displayContours = o => {
@@ -1072,9 +1086,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return;
     }
     if (e.button === 2) return;
-    if (['line','rect','ellipse'].includes(st.tool)) {
+    if (['line','rect','ellipse','polygon'].includes(st.tool)) {
       gestureRef.current = { type: 'shape', tool: st.tool, snap: snap(), start: p, end: p, preview: null,
-        upd(pp) { this.end = pp; this.preview = createShapeObject(this.tool, this.start, this.end, stateRef.current.brushWidth); } };
+        upd(pp) { this.end = pp; this.preview = createShapeObject(this.tool, this.start, this.end, stateRef.current.brushWidth, stateRef.current.polygonSides); } };
       rerender();
     }
     else if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
@@ -1473,6 +1487,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
         {tool === 'rect' && <span className="ve-hint">Потяните диагональ прямоугольника.</span>}
         {tool === 'ellipse' && <span className="ve-hint">Потяните диагональ овала.</span>}
+        {tool === 'polygon' && <><label className="ve-range">Стороны<input type="range" min="3" max="12" step="1" value={polygonSides} onChange={e => setPolygonSides(Number(e.target.value))}/><b>{polygonSides}</b></label><span className="ve-hint">Потяните диагональ многоугольника.</span></>}
+        <button className={`button ${showGuides ? 'primary' : ''}`} onClick={() => setShowGuides(v => !v)} aria-pressed={showGuides}>Направляющие {showGuides ? '✓' : '○'}</button>
+        <button className={`button ${showGrid ? 'primary' : ''}`} onClick={() => setShowGrid(v => !v)} aria-pressed={showGrid}>Сетка {showGrid ? '✓' : '○'}</button>
         {(tool === 'brush' || tool === 'line') && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
         {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
@@ -1486,7 +1503,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       <div className="ve-body">
         <div className="ve-toolbox">
           {TOOL_DEFS.map(([t, key, title]) => <button key={t} className={`ve-tool ${tool === t ? 'active' : ''}`} title={`${title} (${key})`} onClick={() => setTool(t)}>
-            {t === 'select' ? '➤' : t === 'line' ? '／' : t === 'rect' ? '□' : t === 'ellipse' ? '◯' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
+            {t === 'select' ? '➤' : t === 'line' ? '／' : t === 'rect' ? '□' : t === 'ellipse' ? '◯' : t === 'polygon' ? '⬡' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
             <small>{key}</small>
           </button>)}
         </div>
