@@ -29,7 +29,7 @@ export default function App() {
     const [vectorOpen, setVectorOpen] = useState(false);
   const applyVector = ({ outlines, advanceWidth }) => {
     const oldGlyph = project.glyphs[activeCode] || makeGlyph(charOf(activeCode));
-    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [], advanceWidth: oldGlyph.advanceWidth }].slice(-50) }));
     setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...(previous.glyphs[activeCode] || makeGlyph(charOf(activeCode))), outlines, advanceWidth } } }));
     setVectorOpen(false);
     setMessage('Векторные объекты записаны в символ. Экспортируйте TTF/WOFF или ZIP.');
@@ -52,7 +52,7 @@ export default function App() {
 
   const commitStrokes = useCallback(strokes => {
     const oldGlyph = project.glyphs[activeCode] || makeGlyph(charOf(activeCode));
-    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [], advanceWidth: oldGlyph.advanceWidth }].slice(-50) }));
     setProject(previous => {
       const current = previous.glyphs[activeCode] || makeGlyph(charOf(activeCode)); let advanceWidth = current.advanceWidth;
       if (!current.strokes?.length && !current.outlines?.length && strokes.length) { const maxX = Math.max(...strokes.flatMap(stroke => stroke.points.map(point => point.x)), 0); advanceWidth = Math.max(250, Math.min(1400, Math.round(maxX + 100))); }
@@ -87,22 +87,23 @@ export default function App() {
     const snapshot = stack[stack.length - 1];
     const strokes = Array.isArray(snapshot) ? snapshot : (snapshot.strokes || []);
     const outlines = Array.isArray(snapshot) ? undefined : (snapshot.outlines || []);
+    const advanceWidth = Array.isArray(snapshot) ? undefined : snapshot.advanceWidth;
     setHistory(previous => ({ ...previous, [activeCode]: stack.slice(0, -1) }));
-    setProject(previous => { const current = previous.glyphs[activeCode] || glyph; return { ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...current, strokes, ...(outlines !== undefined ? { outlines } : {}) } } }; });
+    setProject(previous => { const current = previous.glyphs[activeCode] || glyph; return { ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...current, strokes, ...(outlines !== undefined ? { outlines } : {}), ...(advanceWidth !== undefined ? { advanceWidth } : {}) } } }; });
     setMessage('Последнее действие отменено.');
   };
   const eraseLast = () => {
     if (glyph.strokes?.length) { commitStrokes(glyph.strokes.slice(0, -1)); setMessage('Последний штрих удалён.'); return; }
     if (glyph.outlines?.length) {
       const oldGlyph = glyph;
-      setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+      setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [], advanceWidth: oldGlyph.advanceWidth }].slice(-50) }));
       setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, outlines: glyph.outlines.slice(0, -1) } } }));
       setMessage('Последний контур скана удалён.');
     }
   };
   const clearGlyph = () => {
     const oldGlyph = glyph;
-    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [] }].slice(-50) }));
+    setHistory(previous => ({ ...previous, [activeCode]: [...(previous[activeCode] || []), { strokes: oldGlyph.strokes || [], outlines: oldGlyph.outlines || [], advanceWidth: oldGlyph.advanceWidth }].slice(-50) }));
     setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, strokes: [], outlines: [] } } }));
     setMessage('Символ очищен (штрихи и скан-контуры).');
   };
