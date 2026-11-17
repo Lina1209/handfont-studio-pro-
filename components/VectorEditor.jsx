@@ -355,6 +355,21 @@ function ribbonPoly(pts, w) {
   }
   return L.concat(R.reverse());
 }
+function createShapeObject(tool, start, end, width) {
+  const left = Math.min(start.x, end.x), right = Math.max(start.x, end.x);
+  const bottom = Math.min(start.y, end.y), top = Math.max(start.y, end.y);
+  const w = right - left, h = top - bottom;
+  if (tool !== 'line' && (w < 2 || h < 2)) return null;
+  let points;
+  if (tool === 'rect') points = [{x:left,y:bottom},{x:right,y:bottom},{x:right,y:top},{x:left,y:top}];
+  else if (tool === 'ellipse') points = Array.from({length:64}, (_,i) => { const a=i/64*Math.PI*2; return {x:(left+right)/2+Math.cos(a)*w/2,y:(bottom+top)/2+Math.sin(a)*h/2}; });
+  else if (tool === 'line') {
+    if (Math.hypot(end.x-start.x,end.y-start.y) < 2) return null;
+    points = ribbonPoly([start,end], Math.max(8, width));
+  } else return null;
+  if (!points || points.length < 3) return null;
+  return { id: uid(), contours: [{ nodes: points.map(p => ({x:F(p.x),y:F(p.y),hIn:null,hOut:null,smooth:false})) }] };
+}
 function contoursFromSvg(text, tol, smoothF, isLower) {
   const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
   const root = doc.documentElement;
@@ -466,6 +481,9 @@ const FAMILIES = ['Georgia', 'Times New Roman', 'Arial', 'Verdana', 'Courier New
 const PATTERNS = [['star5', '★ Звезда 5'], ['star8', '✦ Звезда 8'], ['ring', '◎ Кольцо'], ['flower', '✿ Цветок'], ['heart', '♥ Сердце'], ['diamond', '◆ Ромб'], ['wave', '〜 Волна'], ['zigzag', '⩘ Зигзаг']];
 const TOOL_DEFS = [
   ['select', 'V', 'Выбор / трансформация'],
+  ['line', 'L', 'Прямая линия'],
+  ['rect', 'R', 'Прямоугольник'],
+  ['ellipse', 'O', 'Овал / эллипс'],
   ['node', 'N', 'Узлы и кривые'],
   ['pen', 'P', 'Перо Безье'],
   ['brush', 'B', 'Кисть (штрих)'],
@@ -636,6 +654,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         ctx.beginPath();
         for (const c of displayContours(o)) tracePath(c);
         ctx.fill('nonzero');
+      }
+      if (g && g.type === 'shape' && g.preview) {
+        ctx.save(); ctx.globalAlpha = 0.58; ctx.fillStyle = '#8ea2ff'; ctx.strokeStyle = '#aab8ff'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); for (const c of g.preview.contours) tracePath(c); ctx.fill('evenodd'); ctx.stroke(); ctx.restore();
       }
       if (brushRef.current && brushRef.current.length) {
         ctx.strokeStyle = '#8ea2ff'; ctx.lineWidth = Math.max(1, st.brushWidth * scale); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -1050,7 +1072,12 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return;
     }
     if (e.button === 2) return;
-    if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
+    if (['line','rect','ellipse'].includes(st.tool)) {
+      gestureRef.current = { type: 'shape', tool: st.tool, snap: snap(), start: p, end: p, preview: null,
+        upd(pp) { this.end = pp; this.preview = createShapeObject(this.tool, this.start, this.end, stateRef.current.brushWidth); } };
+      rerender();
+    }
+    else if (st.tool === 'brush') { brushRef.current = [p]; rerender(); }
     else if (st.tool === 'eraser') {
       gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
         upd(pp) {
@@ -1100,7 +1127,15 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const g = gestureRef.current;
     gestureRef.current = null;
     if (g) {
-      if (g.type === 'erase') { if (g.changed) { pushHistory(g.snap); setObjects(clone(stateRef.current.objects)); setMessage('Ластик применён.'); } }
+      if (g.type === 'shape') {
+        if (g.preview) {
+          pushHistory(g.snap);
+          const next = [...stateRef.current.objects, g.preview];
+          setObjects(next); setSel(g.preview.id); setSelNode(null);
+          setMessage('Фигура добавлена. Её можно перемещать, масштабировать и редактировать по узлам.');
+        }
+      }
+      else if (g.type === 'erase') { if (g.changed) { pushHistory(g.snap); setObjects(clone(stateRef.current.objects)); setMessage('Ластик применён.'); } }
       else if (g.type === 'moveOrToggle') {
         if (g.moved && g.map) bakeGesture({ ...g, type: 'transform' });
         else if (g.toggle) setSelMode(m => m === 'scale' ? 'rotate' : 'scale');
@@ -1435,7 +1470,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <span className="ve-hint">клик по линии — новый узел · тяни узлы и рычаги · Alt+рычаг — излом</span>
         </>}
         {tool === 'pen' && <span className="ve-hint">клик — узел · клик и тянуть — кривая · клик по первому узлу или Enter — замкнуть</span>}
-        {tool === 'brush' && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
+        {tool === 'line' && <span className="ve-hint">Потяните от начала к концу линии.</span>}
+        {tool === 'rect' && <span className="ve-hint">Потяните диагональ прямоугольника.</span>}
+        {tool === 'ellipse' && <span className="ve-hint">Потяните диагональ овала.</span>}
+        {(tool === 'brush' || tool === 'line') && <label className="ve-range">Толщина<input type="range" min="10" max="180" value={brushWidth} onChange={e => setBrushWidth(Number(e.target.value))}/><b>{brushWidth}</b></label>}
         {tool === 'eraser' && <label className="ve-range">Размер ластика<input type="range" min="10" max="200" value={eraserR} onChange={e => setEraserR(Number(e.target.value))}/><b>{eraserR}</b></label>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
         <span className="ve-flex"/>
@@ -1448,7 +1486,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       <div className="ve-body">
         <div className="ve-toolbox">
           {TOOL_DEFS.map(([t, key, title]) => <button key={t} className={`ve-tool ${tool === t ? 'active' : ''}`} title={`${title} (${key})`} onClick={() => setTool(t)}>
-            {t === 'select' ? '➤' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
+            {t === 'select' ? '➤' : t === 'line' ? '／' : t === 'rect' ? '□' : t === 'ellipse' ? '◯' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
             <small>{key}</small>
           </button>)}
         </div>
