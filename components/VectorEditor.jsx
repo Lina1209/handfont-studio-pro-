@@ -1606,7 +1606,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       return list;
     });
   };
-  const setSelectedNodesSmooth = smooth => {
+  const setSelectedNodesSmooth = mode => {
     const so=getObj(), st=stateRef.current;
     if (!so) return;
     const refs=(st.selectedNodes||[]).length ? st.selectedNodes : st.selNode ? [st.selNode] : [];
@@ -1614,22 +1614,36 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     commit(list => {
       const ob=list.find(x=>x.id===so.id);
       if (!ob) return list;
+      const targets=new Map();
       for (const ref of refs) {
-        const ns=ob.contours[ref.ci]?.nodes, n=ns?.[ref.ni];
-        if (!n) continue;
-        n.smooth=!!smooth;
-        if (!smooth) { n.hIn=null; n.hOut=null; continue; }
-        const len=ns.length;
+        if (!ob.contours[ref.ci]?.nodes[ref.ni]) continue;
+        if (!targets.has(ref.ci)) targets.set(ref.ci,new Set());
+        targets.get(ref.ci).add(ref.ni);
+      }
+      // Авто: обрабатываем весь контур, но сохраняем выраженные углы.
+      if (mode==='auto') for (const ci of targets.keys()) {
+        const ns=ob.contours[ci]?.nodes||[];
+        targets.set(ci,new Set(ns.map((_,i)=>i)));
+      }
+      for (const [ci,indices] of targets) {
+        const ns=ob.contours[ci]?.nodes||[], len=ns.length;
         if (len<3) continue;
-        const prev=ns[(ref.ni-1+len)%len], next=ns[(ref.ni+1)%len];
-        const dx=next.x-prev.x, dy=next.y-prev.y;
-        const tangent=Math.hypot(dx,dy)||1;
-        const before=Math.hypot(n.x-prev.x,n.y-prev.y);
-        const after=Math.hypot(next.x-n.x,next.y-n.y);
-        const handle=Math.min(before,after)*0.22;
-        const ux=dx/tangent, uy=dy/tangent;
-        n.hIn={x:F(n.x-ux*handle),y:F(n.y-uy*handle)};
-        n.hOut={x:F(n.x+ux*handle),y:F(n.y+uy*handle)};
+        for (const ni of indices) {
+          const n=ns[ni], prev=ns[(ni-1+len)%len], next=ns[(ni+1)%len];
+          if (!n || !prev || !next) continue;
+          const ax=prev.x-n.x, ay=prev.y-n.y, bx=next.x-n.x, by=next.y-n.y;
+          const la=Math.hypot(ax,ay)||1, lb=Math.hypot(bx,by)||1;
+          const cosine=(ax*bx+ay*by)/(la*lb);
+          if (mode==='auto' && cosine>-0.35) {
+            n.smooth=false; n.hIn=null; n.hOut=null; continue;
+          }
+          const dx=next.x-prev.x, dy=next.y-prev.y, tangent=Math.hypot(dx,dy)||1;
+          const factor=mode==='soft'?.12:mode==='curve'?.34:.22;
+          const handle=Math.min(la,lb)*factor, ux=dx/tangent, uy=dy/tangent;
+          n.smooth=true;
+          n.hIn={x:F(n.x-ux*handle),y:F(n.y-uy*handle)};
+          n.hOut={x:F(n.x+ux*handle),y:F(n.y+uy*handle)};
+        }
       }
       return list;
     });
@@ -2053,8 +2067,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={() => selectedNodes.length > 1 ? deleteSelectedNodes() : deleteNode()}>{selectedNodes.length > 1 ? '− узлы' : '− узел'}</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
-          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth(true)} title="Плавно скруглить выбранные узлы">Сгладить узлы</button>
-          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth(false)} title="Сделать выбранные узлы острыми, без кривых">Острые узлы</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('soft')} title="Небольшое мягкое скругление выбранных узлов">Мягко</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('curve')} title="Выраженная плавная кривая на выбранных узлах">Плавная кривая</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('auto')} title="Сгладить весь контур, сохраняя выраженные острые углы">Авто контур</button>
+          <button className="button" disabled={!activeNode && selectedNodes.length===0} onClick={() => setSelectedNodesSmooth('sharp')} title="Сделать выбранные узлы острыми, без кривых">Острые узлы</button>
           <button className="button" disabled={!activeNode || (!activeNode.hIn && !activeNode.hOut)} onClick={clearNodeHandles}>Убрать кривые</button>
           <button className="button" disabled={!activeNode} onClick={makeNodeSymmetric} title="Сделать входящую и исходящую ручки равными и противоположными">⇔ Симметрия</button>
           <button className="button" disabled={!activeNode || !st.selNode || (st.objects.find(o => o.id === st.sel)?.contours[st.selNode.ci]?.nodes.length || 0) < 3} onClick={centerNodeBetweenNeighbors} title="Переместить узел в середину между соседними">↔ Середина</button>
