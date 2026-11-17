@@ -1234,7 +1234,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   /* ===== Применение к букве ===== */
   const applyToGlyph = () => {
     const all = [];
-    for (const o of objects) {
+    for (const source of objects) {
+      // Не изменяем объекты React state во время подготовки экспорта.
+      const o = clone(source);
       normalizeObject(o);
       for (const c of o.contours) {
         const flat = flattenContour(c, 4).map(p => ({ x: F(p.x), y: F(p.y) }));
