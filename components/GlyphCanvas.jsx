@@ -33,7 +33,7 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
         if (points.length === 1) { ctx.beginPath(); ctx.arc(X(points[0].x), Y(points[0].y), ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); }
         else { ctx.beginPath(); ctx.moveTo(X(points[0].x), Y(points[0].y)); for (const point of points.slice(1)) ctx.lineTo(X(point.x), Y(point.y)); ctx.stroke(); }
       };
-      (glyph.strokes || []).forEach(paint);
+      
       if (activeStroke.current) {
         const stroke = activeStroke.current;
         if (stroke.tool === 'eraser') {
@@ -44,6 +44,15 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
           else { ctx.beginPath(); ctx.moveTo(X(stroke.points[0].x), Y(stroke.points[0].y)); stroke.points.slice(1).forEach(point => ctx.lineTo(X(point.x), Y(point.y))); ctx.stroke(); }
           ctx.restore();
         } else paint(stroke);
+        (glyph.outlines || []).forEach(contour => {
+        if (!Array.isArray(contour) || contour.length < 3) return;
+        ctx.fillStyle = '#e8e4da';
+        ctx.beginPath();
+        ctx.moveTo(X(contour[0].x), Y(contour[0].y));
+        for (const point of contour.slice(1)) ctx.lineTo(X(point.x), Y(point.y));
+        ctx.closePath(); ctx.fill();
+      });
+      (glyph.strokes || []).forEach(paint);
       }
       if (selection.current) {
         const { start, end } = selection.current;
