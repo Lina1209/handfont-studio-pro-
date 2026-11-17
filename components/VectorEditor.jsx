@@ -475,6 +475,7 @@ const TOOL_DEFS = [
 
 export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const canvasRef = useRef(null);
+  const activePointerId = useRef(null);
   const [objects, setObjects] = useState(() => {
     const list = [];
     for (const stroke of Array.isArray(glyph.strokes) ? glyph.strokes : []) {
@@ -1029,8 +1030,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
 
   /* ===== События указателя ===== */
   const onPointerDown = e => {
-    if (importOpenRef.current) return;
+    if (importOpenRef.current || activePointerId.current !== null) return;
     e.preventDefault();
+    activePointerId.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
     const p = posFromEvent(e);
     const now = performance.now();
@@ -1066,7 +1068,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     else if (st.tool === 'node') nodeDown(p, e, dbl);
   };
   const onPointerMove = e => {
-    if (importOpenRef.current) return;
+    if (importOpenRef.current || activePointerId.current !== e.pointerId) return;
     const p = posFromEvent(e);
     const st = stateRef.current;
     if (st.tool === 'eraser') eraserPosRef.current = p;
@@ -1092,7 +1094,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     }
     rerender();
   };
-  const onPointerUp = () => {
+  const onPointerUp = e => {
+    if (activePointerId.current !== e.pointerId) return;
+    activePointerId.current = null;
     const g = gestureRef.current;
     gestureRef.current = null;
     if (g) {
