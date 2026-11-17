@@ -519,6 +519,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [sel, setSel] = useState(null);
   const [selMode, setSelMode] = useState('scale');
   const [selNode, setSelNode] = useState(null);
+  const [selectedNodes, setSelectedNodes] = useState([]);
+  const [nodeMultiSelect, setNodeMultiSelect] = useState(false);
   const [view, setView] = useState({ ...VIEW0 });
   const [brushWidth, setBrushWidth] = useState(60);
   const [polygonSides, setPolygonSides] = useState(6);
@@ -549,7 +551,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, view, brushWidth, eraserR, polygonSides, showGuides, showGrid, snapToGrid };
+  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null });
   const brushRef = useRef(null);
@@ -644,7 +646,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         if (g.type === 'transform' && g.map) return mapContours(o.contours, g.map);
         if (g.type === 'node' && g.moved) {
           const d = g.delta;
-          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => ci === g.ci && ni === g.ni ? { x: n.x + d.x, y: n.y + d.y, smooth: n.smooth, hIn: n.hIn ? { x: n.hIn.x + d.x, y: n.hIn.y + d.y } : null, hOut: n.hOut ? { x: n.hOut.x + d.x, y: n.hOut.y + d.y } : null } : n) }));
+          const selected = new Set((g.nodes || [{ ci: g.ci, ni: g.ni }]).map(q => q.ci + ':' + q.ni));
+          return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => selected.has(ci + ':' + ni) ? { x: n.x + d.x, y: n.y + d.y, smooth: n.smooth, hIn: n.hIn ? { x: n.hIn.x + d.x, y: n.hIn.y + d.y } : null, hOut: n.hOut ? { x: n.hOut.x + d.x, y: n.hOut.y + d.y } : null } : n) }));
         }
         if (g.type === 'handle' && g.pos) {
           return o.contours.map((c, ci) => ({ nodes: c.nodes.map((n, ni) => { if (ci !== g.ci || ni !== g.ni) return n; const cp = clone(n); cp[g.which] = { x: g.pos.x, y: g.pos.y }; return cp; }) }));
@@ -725,6 +728,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           ctx.beginPath(); tracePath(c); ctx.stroke();
           c.nodes.forEach((n, ni) => {
             const active = st.selNode && st.selNode.ci === ci && st.selNode.ni === ni;
+            const multi = (st.selectedNodes || []).some(q => q.ci === ci && q.ni === ni);
             if (active) {
               for (const w of ['hIn', 'hOut']) if (n[w]) {
                 ctx.strokeStyle = '#9aa3b5'; ctx.beginPath(); ctx.moveTo(X(n.x), Y(n.y)); ctx.lineTo(X(n[w].x), Y(n[w].y)); ctx.stroke();
@@ -732,8 +736,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
                 ctx.beginPath(); ctx.arc(X(n[w].x), Y(n[w].y), 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
               }
             }
-            ctx.fillStyle = active ? '#4f46e5' : '#fff';
-            ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 1.1;
+            ctx.fillStyle = active ? '#4f46e5' : multi ? '#0f9d8a' : '#fff';
+            ctx.strokeStyle = multi ? '#0f9d8a' : '#4f46e5'; ctx.lineWidth = 1.1;
             ctx.fillRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
             ctx.strokeRect(X(n.x) - 3.4, Y(n.y) - 3.4, 6.8, 6.8);
           });
@@ -821,8 +825,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       if (!ob) return list;
       if (g.type === 'transform' && g.map) ob.contours = mapContours(ob.contours, g.map);
       if (g.type === 'node') {
-        const nn = ob.contours[g.ci] && ob.contours[g.ci].nodes[g.ni];
-        if (nn) {
+        const targets = g.nodes || [{ ci: g.ci, ni: g.ni }];
+        for (const target of targets) {
+          const nn = ob.contours[target.ci] && ob.contours[target.ci].nodes[target.ni];
+          if (!nn) continue;
           nn.x = F(nn.x + g.delta.x); nn.y = F(nn.y + g.delta.y);
           if (nn.hIn) { nn.hIn.x = F(nn.hIn.x + g.delta.x); nn.hIn.y = F(nn.hIn.y + g.delta.y); }
           if (nn.hOut) { nn.hOut.x = F(nn.hOut.x + g.delta.x); nn.hOut.y = F(nn.hOut.y + g.delta.y); }
@@ -955,8 +961,20 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           });
           return;
         }
+        const multiMode = e.shiftKey || st.nodeMultiSelect;
+        let chosen = (st.selectedNodes || []).map(q => ({ ci: q.ci, ni: q.ni }));
+        if (multiMode) {
+          const exists = chosen.some(q => q.ci === nh.ci && q.ni === nh.ni);
+          chosen = exists ? chosen.filter(q => q.ci !== nh.ci || q.ni !== nh.ni) : chosen.concat([nh]);
+          setSelectedNodes(chosen);
+          setSelNode(nh);
+          rerender();
+          return;
+        }
+        if (!chosen.some(q => q.ci === nh.ci && q.ni === nh.ni)) chosen = [nh];
+        setSelectedNodes(chosen);
         setSelNode(nh);
-        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, ci: nh.ci, ni: nh.ni, start: p, delta: { x: 0, y: 0 }, moved: false,
+        gestureRef.current = { type: 'node', snap: snap(), objId: so.id, nodes: chosen, start: p, delta: { x: 0, y: 0 }, moved: false,
           upd(pp) { this.delta = { x: pp.x - this.start.x, y: pp.y - this.start.y }; this.moved = Math.hypot(this.delta.x, this.delta.y) > .5; } };
         rerender();
         return;
@@ -1629,6 +1647,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         {tool === 'node' && <>
           <label>X<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-x' : 'no-node-x'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.x) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('x', e.target.value)}/></label>
           <label>Y<input key={st.selNode ? st.selNode.ci + '-' + st.selNode.ni + '-y' : 'no-node-y'} type="number" step="1" defaultValue={activeNode ? Math.round(activeNode.y) : ''} disabled={!activeNode} onBlur={e => setSelectedNodeCoord('y', e.target.value)}/></label>
+          <button className={`button ${nodeMultiSelect ? 'primary' : ''}`} onClick={() => { setNodeMultiSelect(v => !v); setSelectedNodes(st.selNode ? [st.selNode] : []); }} aria-pressed={nodeMultiSelect} title="Включить выбор нескольких узлов касанием">☷ Мультивыбор</button>
+          <button className="button" disabled={!selectedNodes.length} onClick={() => { setSelectedNodes([]); setSelNode(null); rerender(); }}>Снять выбор</button>
           <button className="button" disabled={!st.selNode} onClick={addNodeAfter}>+ узел</button>
           <button className="button" disabled={!st.selNode} onClick={deleteNode}>− узел</button>
           <button className="button" disabled={!activeNode} onClick={toggleSmoothSel}>{activeNode ? (activeNode.smooth ? 'Острый угол' : 'Сгладить') : 'Угол / гладкий'}</button>
