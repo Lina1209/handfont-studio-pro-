@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEraseRestoreMasks, buildBrushMask, buildRestorePatch, contoursToMultiPolygon, multiPolygonToContours } from '../lib/restoreGeometry.js';
+import { applyEraseRestoreMasks, buildBrushMask, buildRestorePatch, constrainRestorePatch, contoursToMultiPolygon, multiPolygonToContours } from '../lib/restoreGeometry.js';
 
 const square = (x1, y1, x2, y2) => [
   { x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }
@@ -49,6 +49,15 @@ test('restore patch contains only missing source area under the brush', () => {
   assert.ok(Math.abs(filledArea(patch) - 1200) < 1e-5);
 });
 
+test('smoothed restore preview is clipped to source and brush and excludes visible geometry', () => {
+  const source = [square(0, 0, 100, 100)];
+  const current = [square(0, 0, 40, 100)];
+  const candidate = [square(-20, -20, 80, 120)];
+  const mask = [square(20, 20, 70, 70)];
+  const clipped = constrainRestorePatch(candidate, current, source, mask);
+  assert.ok(Math.abs(filledArea(clipped) - 1500) < 1e-5);
+});
+ 
 test('restore patch does not duplicate geometry already present', () => {
   const source = [square(0, 0, 100, 100)];
   const patch = buildRestorePatch(source, source, [square(20, 20, 80, 80)]);
