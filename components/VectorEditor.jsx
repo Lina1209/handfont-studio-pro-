@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, useCallback } from 'react';
 import * as opentypeModule from 'opentype.js';
 import { METRICS } from '../lib/project.js';
 import { strokeToContours } from '../lib/geometry.js';
-import { buildBrushMask, buildRestorePatch } from '../lib/restoreGeometry.js';
+import { buildBrushMask, buildRestorePatch, constrainRestorePatch } from '../lib/restoreGeometry.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -1459,7 +1459,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const mask = buildBrushMask(g.points, stateRef.current.restoreRadius);
     const patch = buildRestorePatch(current, source, mask);
     const softness = Math.max(0, Math.min(0.45, stateRef.current.restoreSoftness / 220));
-    g.preview = patch.map(ring => ({ nodes: smoothNodes(ring.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })), softness) }));
+    const softened = patch.map(ring => smoothNodes(ring.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })), softness).map(n => ({ x: n.x, y: n.y })));
+    const safePatch = constrainRestorePatch(softened, current, source, mask);
+    g.preview = safePatch.map(ring => ({ nodes: ring.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })) }));
   }
 
   /* ===== События указателя ===== */
