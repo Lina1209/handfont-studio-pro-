@@ -419,7 +419,7 @@ test('library backup rejects invalid asset metadata and corrupted checksums befo
     format: 'handfont-studio-library-backup', version: 1,
     projects: [],
     assets: [{
-      id: 'a1', name: 'font.ttf', data: btoa(String.fromCharCode(...corrupted)),
+      id: 'a1', name: 'font.ttf', data: 'AQID',
       size: 3, checksum: '00000000'
     }]
   };
