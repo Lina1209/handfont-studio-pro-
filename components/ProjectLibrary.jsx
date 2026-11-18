@@ -72,12 +72,17 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     const file = event.target.files?.[0]; if (!file) return;
     try {
       if (file.size > 150 * 1024 * 1024) throw new Error('Файл резервной копии слишком большой: максимум 150 МБ.');
+      if (!window.confirm('Восстановление заменит ВСЕ проекты и файлы в текущей библиотеке данными из резервной копии. Сначала убедитесь, что у вас есть копия нынешней библиотеки. Продолжить?')) return;
       setBusy(true);
       const backup = JSON.parse(await file.text());
       const current = await importLibraryBackup(backup);
       await refresh();
-      if (current?.glyphs) onLoadProject(current);
-      setNote('Резервная копия восстановлена. Текущий проект загружен.');
+      if (current?.glyphs) {
+        onLoadProject(current);
+        setNote('Резервная копия восстановлена: библиотека заменена, текущий проект загружен.');
+      } else {
+        setNote('Резервная копия восстановлена: библиотека заменена. Текущий проект в файле отсутствовал, поэтому он не изменён.');
+      }
     } catch (error) { setNote(`Не удалось восстановить библиотеку: ${error.message}`); }
     finally { setBusy(false); event.target.value = ''; }
   };
