@@ -45,8 +45,9 @@ export default function WorksheetImport({ onImport, onPrint }) {
     if (!files.length) { setNote('Сначала выберите заполненный PDF или до 7 фото/сканов страниц.'); return; }
     setBusy(true);
     setScanResult(null);
-    const collected = [], errors = [], skipped = [];
+    const collected = [], errors = [], skipped = [], alignmentModes = [];
     let processed = 0;
+    let extraPdfPages = 0;
     try {
       if (files.length > 1) {
         for (let index = 0; index < files.length; index++) {
@@ -55,6 +56,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
             const result = await scanWorksheetFile(files[index], index);
             collected.push(...(result.glyphs || []));
             skipped.push(...(result.skipped || []));
+            if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
             processed++;
           } catch (error) { errors.push(`Страница ${index + 1}: ${error.message}`); }
         }
@@ -64,12 +66,14 @@ export default function WorksheetImport({ onImport, onPrint }) {
         if (isPdf) {
           const pageCount = await getWorksheetPdfPageCount(file);
           const total = Math.min(pageCount, SHEET_PAGES.length);
+          extraPdfPages = Math.max(0, pageCount - SHEET_PAGES.length);
           for (let index = 0; index < total; index++) {
             try {
               setNote(`Распознаю страницу ${index + 1} из ${total}…`);
               const result = await scanWorksheetFile(file, index);
               collected.push(...(result.glyphs || []));
               skipped.push(...(result.skipped || []));
+              if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
               processed++;
             } catch (error) { errors.push(`Страница ${index + 1}: ${error.message}`); }
           }
@@ -77,14 +81,18 @@ export default function WorksheetImport({ onImport, onPrint }) {
           const result = await scanWorksheetFile(file, page);
           collected.push(...(result.glyphs || []));
           skipped.push(...(result.skipped || []));
+          if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
           processed++;
         }
       }
       if (!collected.length) throw new Error(errors[0] || 'Не удалось распознать символы. Проверьте качество сканов и угловые метки.');
-      const combined = { glyphs: collected, skipped, pagesProcessed: processed, pageErrors: errors };
+      const combined = { glyphs: collected, skipped, pagesProcessed: processed, pageErrors: errors, alignmentModes, extraPdfPages };
       onImport(combined);
       setScanResult(combined);
-      setNote(`Импортировано символов: ${collected.length}. Обработано страниц: ${processed}.${errors.length ? ` Есть страницы для повторной проверки: ${errors.map(item => item.split(':')[0]).join(', ')}.` : ''} Проверьте каждый знак в библиотеке.`);
+      const alignmentNote = alignmentModes.includes('three-mark-affine')
+        ? ' Использовано выравнивание по трём меткам — особенно внимательно проверьте контуры.'
+        : ' Выравнивание по четырём меткам выполнено.';
+      setNote(`Импортировано символов: ${collected.length}. Обработано страниц: ${processed}.${skipped.length ? ` Пропущено пустых/нечётких знаков: ${skipped.join(' ')}.` : ''}${errors.length ? ` Не обработаны: ${errors.map(item => item.split(':')[0]).join(', ')}.` : ''}${extraPdfPages ? ` В PDF ещё ${extraPdfPages} стр. сверх семистраничного бланка — они не обрабатывались.` : ''}${alignmentNote} Проверьте каждый знак в редакторе.`);
     } catch (error) { setNote(error.message || 'Не удалось обработать файлы.'); }
     finally { setBusy(false); }
   };
