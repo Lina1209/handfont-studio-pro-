@@ -4,6 +4,7 @@ import WorksheetImport from './components/WorksheetImport.jsx';
 import FontPassport from './components/FontPassport.jsx';
 import ProjectLibrary from './components/ProjectLibrary.jsx';
 import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
+import { resolveFontMetadata } from './lib/metadata.js';
 import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, updateProjectMetadata } from './lib/project.js';
 import { validateProject } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
@@ -65,7 +66,8 @@ export default function App() {
   const exportPackage = async () => {
     try {
       const styles = ['Regular'];
-      const declaredLicense = project.passport?.license || project.metadata?.license || 'SIL Open Font License 1.1';
+      const fontMeta = resolveFontMetadata(project);
+      const declaredLicense = fontMeta.license;
       const licenseFile = declaredLicense === 'SIL Open Font License 1.1'
         ? { name: 'OFL.txt', data: OFL_LICENSE }
         : { name: 'LICENSE-NOTICE.txt', data: `License declared in the font passport:\n${declaredLicense}\n\nAdd the complete license text before distributing the font.` };
@@ -77,13 +79,13 @@ export default function App() {
         { name: 'METADATA.json', data: JSON.stringify({
           familyName: project.familyName,
           ...project.metadata,
-          author: project.passport?.author || project.metadata?.author || '',
-          description: project.passport?.description || project.metadata?.description || '',
-          license: project.passport?.license || project.metadata?.license || 'SIL Open Font License 1.1',
+          author: fontMeta.author,
+          description: fontMeta.description,
+          license: fontMeta.license,
           passport: project.passport || {},
           packageNote: 'Prepared by HandFont Studio.'
         }, null, 2) },
-        { name: 'README.txt', data: `Font family: ${project.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
+        { name: 'README.txt', data: `Font family: ${fontMeta.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${fontMeta.version}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
       ];
       const files = await buildDistributionFiles(project, buildFont, styles, extras);
       const hasWoff = files.some(file => file.name.endsWith('.woff'));
