@@ -6,6 +6,7 @@ import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
 import { SHEET_PAGES } from '../lib/worksheet.js';
 import { STORAGE_KEY, defaultProject, loadProject, updateProjectMetadata } from '../lib/project.js';
+import { resolveFontMetadata } from '../lib/metadata.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -173,4 +174,27 @@ test('project metadata edits keep passport author, description and license in sy
   assert.equal(updated.passport.year, '2026');
   assert.equal(updated.metadata.version, '1.000');
   assert.equal(updateProjectMetadata(updated, 'version', '1.005').passport.author, 'New Author');
+});
+
+
+test('font metadata resolver trims fields and consistently falls back from blank passport values', () => {
+  const resolved = resolveFontMetadata({
+    familyName: '  Rune Family  ',
+    metadata: { author: '  Studio Author ', description: ' Description ', license: ' SIL Open Font License 1.1 ', version: ' 1.007 ' },
+    passport: { author: '   ', description: '', license: '   ' }
+  });
+  assert.deepEqual(resolved, {
+    familyName: 'Rune Family',
+    author: 'Studio Author',
+    description: 'Description',
+    license: 'SIL Open Font License 1.1',
+    version: '1.007'
+  });
+});
+
+test('font metadata resolver supplies stable defaults for missing or malformed metadata', () => {
+  assert.deepEqual(resolveFontMetadata({ metadata: null, passport: [] }), {
+    familyName: 'HandFont', author: '', description: '',
+    license: 'SIL Open Font License 1.1', version: '1.000'
+  });
 });
