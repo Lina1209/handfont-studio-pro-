@@ -64,8 +64,12 @@ export default function App() {
   const exportPackage = async () => {
     try {
       const styles = ['Regular'];
+      const declaredLicense = project.passport?.license || project.metadata?.license || 'SIL Open Font License 1.1';
+      const licenseFile = declaredLicense === 'SIL Open Font License 1.1'
+        ? { name: 'OFL.txt', data: OFL_LICENSE }
+        : { name: 'LICENSE-NOTICE.txt', data: `License declared in the font passport:\n${declaredLicense}\n\nAdd the complete license text before distributing the font.` };
       const extras = [
-        { name: 'OFL.txt', data: OFL_LICENSE },
+        licenseFile,
         { name: 'source/handfont-project.json', data: JSON.stringify(project, null, 2) },
         { name: 'specimen/specimen.svg', data: fontSpecimenSvg(project) },
         { name: 'passport/font-passport.json', data: JSON.stringify({ familyName: project.familyName, metadata: project.metadata, passport: project.passport || {}, glyphInfo: project.glyphInfo || {} }, null, 2) },
@@ -78,7 +82,7 @@ export default function App() {
           passport: project.passport || {},
           packageNote: 'Prepared by HandFont Studio.'
         }, null, 2) },
-        { name: 'README.txt', data: `Font family: ${project.familyName}\nAuthor: ${project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: SIL Open Font License 1.1\n` }
+        { name: 'README.txt', data: `Font family: ${project.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
       ];
       const files = await buildDistributionFiles(project, buildFont, styles, extras);
       downloadBlob(new Blob([createZip(files)], { type: 'application/zip' }), `${safeFilename(project.familyName)}-distribution.zip`);
