@@ -98,9 +98,37 @@ export default function App() {
   const importSheetGlyphs = payload => {
     const imported = Array.isArray(payload) ? payload : (payload?.glyphs || []);
     if (!imported.length) { setMessage('Символы не распознаны.'); return; }
-    setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, ...Object.fromEntries(imported.map(item => [item.code, { ...(previous.glyphs[item.code] || makeGlyph(item.char)), strokes: item.strokes || [], outlines: item.outlines || [], advanceWidth: item.advanceWidth, importedFromWorksheet: true }])) } }));
+
+    // Импорт скана — такое же редактирование, как рисование: сохраняем
+    // снимок каждого заменяемого знака, чтобы пользователь мог отменить импорт.
+    const codes = [...new Set(imported.map(item => String(item.code)))];
+    setHistory(previous => ({
+      ...previous,
+      ...Object.fromEntries(codes.map(code => {
+        const oldGlyph = project.glyphs[code] || makeGlyph(charOf(Number(code)));
+        const snapshot = {
+          strokes: oldGlyph.strokes || [],
+          outlines: oldGlyph.outlines || [],
+          advanceWidth: oldGlyph.advanceWidth
+        };
+        return [code, [...(previous[code] || []), snapshot].slice(-50)];
+      }))
+    }));
+    setProject(previous => ({
+      ...previous,
+      glyphs: {
+        ...previous.glyphs,
+        ...Object.fromEntries(imported.map(item => [item.code, {
+          ...(previous.glyphs[item.code] || makeGlyph(item.char)),
+          strokes: item.strokes || [],
+          outlines: item.outlines || [],
+          advanceWidth: item.advanceWidth,
+          importedFromWorksheet: true
+        }]))
+      }
+    }));
     const skipped = Array.isArray(payload?.skipped) ? payload.skipped : [];
-    setMessage(`Импортированы символы: ${imported.map(item => item.char).join(' ')}.${skipped.length ? ` Пропущены: ${skipped.join(' ')}.` : ''} Просмотрите результат в библиотеке.`);
+    setMessage(`Импортированы символы: ${imported.map(item => item.char).join(' ')}.${skipped.length ? ` Пропущены: ${skipped.join(' ')}.` : ''} Проверьте знаки в редакторе; при необходимости используйте «Отменить».`);
   };
   const undo = () => {
     const stack = history[activeCode] || []; if (!stack.length) return;
