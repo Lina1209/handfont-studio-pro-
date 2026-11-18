@@ -27,7 +27,7 @@ export default function App() {
   const [penColor, setPenColor] = useState('#f2eee7');
   const [showGuides, setShowGuides] = useState(true);
   const [previewText, setPreviewText] = useState('');
-  const [message, setMessage] = useState(() => localStorage.getItem(RECOVERY_STORAGE_KEY) ? 'Обнаружен повреждённый файл автосохранения. Загружена последняя сохранённая копия; исходные данные сохранены отдельно для восстановления. Скачайте резервную копию.' : 'Изменения автоматически сохраняются на этом устройстве.');
+  const [message, setMessage] = useState(() => { try { return localStorage.getItem(RECOVERY_STORAGE_KEY) ? 'Обнаружен повреждённый файл автосохранения. Загружена последняя сохранённая копия; исходные данные сохранены отдельно для восстановления. Скачайте резервную копию.' : 'Изменения автоматически сохраняются на этом устройстве.'; } catch { return 'Автосохранение недоступно в этом режиме браузера. Скачивайте резервные копии регулярно.'; } });
   const [fontUrl, setFontUrl] = useState('');
   const [qualityOpen, setQualityOpen] = useState(false);
     const [vectorOpen, setVectorOpen] = useState(false);
