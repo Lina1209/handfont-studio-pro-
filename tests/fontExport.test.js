@@ -125,3 +125,9 @@ test('worksheet generator contains seven printable pages with no duplicated symb
   const allChars = SHEET_PAGES.flat();
   assert.equal(new Set(allChars).size, allChars.length);
 });
+
+
+test('createZip rejects NUL bytes in entry names', () => {
+  const invalidName = `bad${String.fromCharCode(0)}name.txt`;
+  assert.throws(() => createZip([{ name: invalidName, data: 'x' }]), /некорректное имя файла/);
+});
