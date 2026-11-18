@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
+import { createZip } from '../lib/publishing.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -54,4 +55,39 @@ test('ttfToWoff creates a WOFF container with consistent header lengths', async 
 test('ttfToWoff rejects truncated or invalid font data', async () => {
   await assert.rejects(() => ttfToWoff(new ArrayBuffer(4)), /слишком короткий/);
   await assert.rejects(() => ttfToWoff(new Uint8Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])), /некорректная таблица/);
+});
+
+
+test('createZip writes a readable UTF-8 archive with correct local and central records', () => {
+  const zip = createZip([
+    { name: 'fonts/test.ttf', data: new Uint8Array([0, 1, 2, 255]) },
+    { name: 'паспорт/описание.txt', data: 'Проверка архива' }
+  ]);
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  const read32 = at => view.getUint32(at, true);
+  const read16 = at => view.getUint16(at, true);
+  assert.equal(read32(0), 0x04034b50);
+  let cursor = 0;
+  const localFiles = [];
+  while (read32(cursor) === 0x04034b50) {
+    const nameLength = read16(cursor + 26), extraLength = read16(cursor + 28);
+    const size = read32(cursor + 18);
+    const name = new TextDecoder().decode(zip.slice(cursor + 30, cursor + 30 + nameLength));
+    const dataStart = cursor + 30 + nameLength + extraLength;
+    localFiles.push({ name, data: zip.slice(dataStart, dataStart + size) });
+    cursor = dataStart + size;
+  }
+  assert.deepEqual(localFiles.map(file => file.name), ['fonts/test.ttf', 'паспорт/описание.txt']);
+  assert.deepEqual([...localFiles[0].data], [0, 1, 2, 255]);
+  assert.equal(new TextDecoder().decode(localFiles[1].data), 'Проверка архива');
+  assert.equal(read32(cursor), 0x02014b50);
+  const endOffset = zip.length - 22;
+  assert.equal(read32(endOffset), 0x06054b50);
+  assert.equal(read16(endOffset + 10), 2);
+});
+
+test('createZip rejects duplicate paths and unsupported input', () => {
+  assert.throws(() => createZip([{ name: 'same.txt', data: 'a' }, { name: 'same.txt', data: 'b' }]), /Повторяющийся путь/);
+  assert.throws(() => createZip([{ name: 'bad.bin', data: {} }]), /Некорректные данные/);
+  assert.throws(() => createZip(null), /список файлов/);
 });
