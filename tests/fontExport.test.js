@@ -8,6 +8,7 @@ import { SHEET_PAGES } from '../lib/worksheet.js';
 import { STORAGE_KEY, defaultProject, loadProject, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
+import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot } from '../lib/project.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -252,4 +253,48 @@ test('JSON project import rejects dangerous property names and oversized project
   assert.throws(() => normalizeImportedProject({
     familyName: 'Huge', glyphs: { 65: { strokes: [{ points }], outlines: [] } }
   }), /Слишком много точек/);
+});
+
+
+test('local project autosave keeps a last-known-good snapshot', () => {
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value))
+  };
+  const first = defaultProject();
+  first.familyName = 'First saved';
+  saveProjectSnapshot(first);
+  const second = { ...first, familyName: 'Second saved' };
+  saveProjectSnapshot(second);
+  assert.equal(JSON.parse(values.get(STORAGE_KEY)).familyName, 'Second saved');
+  assert.equal(JSON.parse(values.get(BACKUP_STORAGE_KEY)).familyName, 'First saved');
+  delete globalThis.localStorage;
+});
+
+test('local project loader recovers the previous snapshot when the current JSON is corrupted', () => {
+  const values = new Map([
+    [STORAGE_KEY, '{"glyphs": broken json'],
+    [BACKUP_STORAGE_KEY, JSON.stringify({ ...defaultProject(), familyName: 'Recovered project' })]
+  ]);
+  globalThis.localStorage = {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value))
+  };
+  const recovered = loadProject();
+  assert.equal(recovered.familyName, 'Recovered project');
+  assert.equal(values.get(RECOVERY_STORAGE_KEY), '{"glyphs": broken json');
+  delete globalThis.localStorage;
+});
+
+test('local project loader safely starts fresh when no valid snapshot exists', () => {
+  const values = new Map([[STORAGE_KEY, 'not-json'], [BACKUP_STORAGE_KEY, '{broken']]);
+  globalThis.localStorage = {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value))
+  };
+  const loaded = loadProject();
+  assert.equal(loaded.familyName, 'My Handwriting');
+  assert.equal(values.get(RECOVERY_STORAGE_KEY), 'not-json');
+  delete globalThis.localStorage;
 });
