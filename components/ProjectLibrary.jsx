@@ -134,7 +134,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
       {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" disabled={busy} title="Удалить файл" aria-label={`Удалить файл ${item.name}`} onClick={() => deleteAsset(item)}>×</button></div>) : <small className="library-empty">Пока нет файлов и бланков.</small>}
     </div>
     <button className="button full" disabled={busy} onClick={exportBackup}>⇩ Создать полную резервную копию</button>
-    <label className="button full import-button">Восстановить резервную копию<input type="file" accept=".json,application/json" onChange={importBackup}/></label>
+    <label className={`button full import-button${busy ? " disabled" : ""}`}>Восстановить резервную копию<input type="file" accept=".json,application/json" disabled={busy} onChange={importBackup}/></label>
     {note && <p className="worksheet-note" role="status">{note}</p>}
   </section>;
 }
