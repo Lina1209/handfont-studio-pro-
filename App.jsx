@@ -6,7 +6,7 @@ import ProjectLibrary from './components/ProjectLibrary.jsx';
 import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
 import { resolveFontMetadata } from './lib/metadata.js';
 import { readProjectJsonFile } from './lib/projectImport.js';
-import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, updateProjectMetadata } from './lib/project.js';
+import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, RECOVERY_STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, saveProjectSnapshot, updateProjectMetadata } from './lib/project.js';
 import { validateProject } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
 import { openWorksheetPrint } from './lib/worksheet.js';
@@ -27,7 +27,7 @@ export default function App() {
   const [penColor, setPenColor] = useState('#f2eee7');
   const [showGuides, setShowGuides] = useState(true);
   const [previewText, setPreviewText] = useState('');
-  const [message, setMessage] = useState('Изменения автоматически сохраняются на этом устройстве.');
+  const [message, setMessage] = useState(() => localStorage.getItem(RECOVERY_STORAGE_KEY) ? 'Обнаружен повреждённый файл автосохранения. Загружена последняя сохранённая копия; исходные данные сохранены отдельно для восстановления. Скачайте резервную копию.' : 'Изменения автоматически сохраняются на этом устройстве.');
   const [fontUrl, setFontUrl] = useState('');
   const [qualityOpen, setQualityOpen] = useState(false);
     const [vectorOpen, setVectorOpen] = useState(false);
@@ -44,8 +44,19 @@ export default function App() {
   const quality = useMemo(() => validateProject(project), [project]);
 
   useEffect(() => {
-    const timer = setTimeout(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...project, updatedAt: Date.now() })); } catch { setMessage('Не удалось сохранить данные. Скачайте резервную копию проекта.'); } }, 350);
-    return () => clearTimeout(timer);
+    const persist = () => {
+      try { saveProjectSnapshot(project); }
+      catch (error) { setMessage(error.message || 'Не удалось сохранить проект. Скачайте резервную копию.'); }
+    };
+    const timer = setTimeout(persist, 350);
+    const flushOnHide = () => { if (document.visibilityState === 'hidden') persist(); };
+    window.addEventListener('pagehide', persist);
+    document.addEventListener('visibilitychange', flushOnHide);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('pagehide', persist);
+      document.removeEventListener('visibilitychange', flushOnHide);
+    };
   }, [project]);
   useEffect(() => {
     let url = '';
