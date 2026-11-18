@@ -110,8 +110,8 @@ export default function WorksheetImport({ onImport, onPrint }) {
 
   return <section className="panel worksheet-panel">
     <div className="section-heading"><div><small>РУКОПИСНЫЙ ВВОД</small><h2>Бланк и скан</h2></div><span className="worksheet-icon">▦</span></div>
-    <p className="worksheet-copy">Скачайте и распечатайте полный семистраничный бланк. Заполните его от руки и загрузите один многостраничный PDF или до 7 отдельных фото/сканов. При загрузке отдельных файлов соблюдайте порядок страниц.</p>
-    <button className="button full" type="button" onClick={onPrint}>▤ Скачать / распечатать все 7 страниц</button>
+    <p className="worksheet-copy">Скачайте пустой бланк из библиотеки или откройте его здесь. Сохраните все 7 листов в PDF через окно печати, заполните от руки и загрузите один многостраничный PDF или до 7 отдельных фото/сканов. При загрузке отдельных файлов соблюдайте порядок страниц.</p>
+    <button className="button full" type="button" onClick={onPrint}>⇩ Скачать PDF / печать всех 7 страниц</button>
     <label className="field-label worksheet-file">PDF или до 7 фото/сканов<input type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" multiple onChange={chooseFiles}/></label>
     {files.length > 0 && <div className="worksheet-file-list"><strong>Загружено: {files.length}/7</strong>{files.map((file, index) => <button type="button" key={`${file.name}-${index}`} className={selectedFile === index ? 'selected' : ''} onClick={() => { setSelectedFile(index); if (files.length > 1) setPage(index); }}><span>{index + 1}. {file.name}</span><small>{Math.max(1, Math.round(file.size / 1024))} КБ</small></button>)}</div>}
     {files.length === 1 && !(activeFile?.type === 'application/pdf' || /\.pdf$/i.test(activeFile?.name || '')) && <label className="field-label">Страница бланка<select value={page} onChange={event => setPage(Number(event.target.value))}>{pageOptions.map(({ index, chars }) => <option value={index} key={index}>Страница {index + 1} — {chars[0]}…{chars.at(-1)}</option>)}</select></label>}
