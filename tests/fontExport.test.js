@@ -298,3 +298,22 @@ test('local project loader safely starts fresh when no valid snapshot exists', (
   assert.equal(values.get(RECOVERY_STORAGE_KEY), 'not-json');
   delete globalThis.localStorage;
 });
+
+
+test('local project loader recovers when JSON parses but glyph geometry is structurally damaged', () => {
+  const damaged = { ...defaultProject(), familyName: 'Broken current', glyphs: {
+    65: { strokes: [{ points: [{ x: 1, y: 'bad' }] }], outlines: [] }
+  } };
+  const values = new Map([
+    [STORAGE_KEY, JSON.stringify(damaged)],
+    [BACKUP_STORAGE_KEY, JSON.stringify({ ...defaultProject(), familyName: 'Safe previous copy' })]
+  ]);
+  globalThis.localStorage = {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value))
+  };
+  const loaded = loadProject();
+  assert.equal(loaded.familyName, 'Safe previous copy');
+  assert.equal(values.get(RECOVERY_STORAGE_KEY), JSON.stringify(damaged));
+  delete globalThis.localStorage;
+});
