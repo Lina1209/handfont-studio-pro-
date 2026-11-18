@@ -13,6 +13,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
   useEffect(() => {
     let cancelled = false;
     setPreviewUrl('');
+    setScanResult(null);
     if (!file) return () => { cancelled = true; };
     previewWorksheetFile(file, page).then(url => {
       if (!cancelled) setPreviewUrl(url);
