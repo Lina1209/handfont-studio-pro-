@@ -75,9 +75,9 @@ export default function App() {
         licenseFile,
         { name: 'source/handfont-project.json', data: JSON.stringify(project, null, 2) },
         { name: 'specimen/specimen.svg', data: fontSpecimenSvg(project) },
-        { name: 'passport/font-passport.json', data: JSON.stringify({ familyName: project.familyName, metadata: project.metadata, passport: project.passport || {}, glyphInfo: project.glyphInfo || {} }, null, 2) },
+        { name: 'passport/font-passport.json', data: JSON.stringify({ familyName: fontMeta.familyName, metadata: { ...project.metadata, author: fontMeta.author, description: fontMeta.description, license: fontMeta.license, version: fontMeta.version }, passport: { ...(project.passport || {}), author: fontMeta.author, description: fontMeta.description, license: fontMeta.license }, glyphInfo: project.glyphInfo || {} }, null, 2) },
         { name: 'METADATA.json', data: JSON.stringify({
-          familyName: project.familyName,
+          familyName: fontMeta.familyName,
           ...project.metadata,
           author: fontMeta.author,
           description: fontMeta.description,
@@ -85,13 +85,13 @@ export default function App() {
           passport: project.passport || {},
           packageNote: 'Prepared by HandFont Studio.'
         }, null, 2) },
-        { name: 'README.txt', data: `Font family: ${fontMeta.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${fontMeta.version}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
+        { name: 'README.txt', data: `Font family: ${fontMeta.familyName}\nAuthor: ${fontMeta.author || '(not specified)'}\nVersion: ${fontMeta.version}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
       ];
       const files = await buildDistributionFiles(project, buildFont, styles, extras);
       const hasWoff = files.some(file => file.name.endsWith('.woff'));
       const readme = files.find(file => file.name === 'README.txt');
       if (readme) {
-        readme.data = `Font family: ${project.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF${hasWoff ? ' + WOFF' : ''} Regular\nLicense: ${declaredLicense}\n`;
+        readme.data = `Font family: ${project.familyName}\nAuthor: ${fontMeta.author || '(not specified)'}\nVersion: ${fontMeta.version}\nFormats: TTF${hasWoff ? ' + WOFF' : ''} Regular\nLicense: ${declaredLicense}\n`;
       }
       downloadBlob(new Blob([createZip(files)], { type: 'application/zip' }), `${safeFilename(project.familyName)}-distribution.zip`);
       setMessage(`ZIP собран: TTF${hasWoff ? ' + WOFF' : ''} Regular, лицензия, исходник, образец и метаданные.`);
