@@ -124,6 +124,20 @@ export default function App() {
       if (parsed.metadata != null && (typeof parsed.metadata !== 'object' || Array.isArray(parsed.metadata))) {
         throw new Error('Раздел метаданных повреждён.');
       }
+      if (parsed.passport != null && (typeof parsed.passport !== 'object' || Array.isArray(parsed.passport))) {
+        throw new Error('Паспорт шрифта повреждён.');
+      }
+      if (parsed.glyphInfo != null && (typeof parsed.glyphInfo !== 'object' || Array.isArray(parsed.glyphInfo))) {
+        throw new Error('Каталог знаков повреждён.');
+      }
+      for (const [code, info] of Object.entries(parsed.glyphInfo || {})) {
+        const number = Number(code);
+        if (!Number.isInteger(number) || number < 0 || number > 0x10ffff ||
+            (number >= 0xd800 && number <= 0xdfff) ||
+            !info || typeof info !== 'object' || Array.isArray(info)) {
+          throw new Error(`Описание знака ${code} повреждено.`);
+        }
+      }
       for (const [code, item] of Object.entries(parsed.glyphs)) {
         const number = Number(code);
         if (!Number.isInteger(number) || number < 0 || number > 0x10ffff || (number >= 0xd800 && number <= 0xdfff)) {
@@ -144,6 +158,8 @@ export default function App() {
         ...base,
         ...parsed,
         metadata: { ...base.metadata, ...(parsed.metadata || {}) },
+        passport: { ...(parsed.passport || {}) },
+        glyphInfo: { ...(parsed.glyphInfo || {}) },
         glyphs: { ...base.glyphs, ...parsed.glyphs }
       };
       const validation = validateProject(candidate);
