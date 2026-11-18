@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { buildFont, safeFilename } from '../lib/font.js';
 import { openWorksheetPrint } from '../lib/worksheet.js';
 import { validateFontAsset } from '../lib/fontFile.js';
+import { createProjectBackup, parseProjectBackup } from '../lib/projectBackup.js';
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
   removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject, updateLibraryProject
@@ -65,6 +66,25 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   const downloadAsset = async asset => {
     const item = assets.find(value => value.id === asset.id);
     if (item?.blob) downloadBlob(item.blob, item.name);
+  };
+  const exportOneProject = item => {
+    try {
+      const backup = createProjectBackup(item);
+      downloadBlob(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }), `${safeFilename(item.name)}-project-backup.json`);
+      setNote(`Резервная копия проекта «${item.name}» скачана. Остальная библиотека не затронута.`);
+    } catch (error) { setNote(`Не удалось сохранить отдельный проект: ${error.message}`); }
+  };
+  const importOneProject = async event => {
+    const file = event.target.files?.[0]; if (!file) return;
+    try {
+      if (file.size > 25 * 1024 * 1024) throw new Error('Файл проекта слишком большой: максимум 25 МБ.');
+      const parsed = parseProjectBackup(JSON.parse(await file.text()));
+      setBusy(true);
+      const restored = await saveLibraryProject({ ...parsed.project, familyName: `${parsed.project.familyName || parsed.name} — восстановлено` });
+      await refresh();
+      setNote(`Проект восстановлен как отдельная запись «${restored.name}». Остальные проекты и файлы библиотеки сохранены.`);
+    } catch (error) { setNote(`Не удалось восстановить отдельный проект: ${error.message}`); }
+    finally { setBusy(false); event.target.value = ''; }
   };
   const exportBackup = async () => {
     try {
@@ -138,11 +158,12 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     <button className="button full" disabled={busy} onClick={saveGeneratedFont}>＋ Создать TTF и добавить в библиотеку</button>
     <label className="button full import-button">Добавить файлы в библиотеку (шрифты и бланки)<input type="file" accept=".ttf,.otf,.woff,.woff2,.pdf,.png,.jpg,.jpeg,.webp,font/ttf,font/otf,font/woff,application/pdf,image/png,image/jpeg,image/webp" multiple onChange={uploadAssets}/></label>
     <div className="library-list"><strong>Проекты ({projects.length})</strong>
-      {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button" disabled={busy} title="Обновить сохранённый проект текущей работой" aria-label={`Обновить проект ${item.name} текущей работой`} onClick={() => updateProject(item)}>↻</button><button className="button" disabled={busy} title="Создать независимую копию" aria-label={`Создать копию проекта ${item.name}`} onClick={() => duplicateProject(item)}>⧉</button><button className="button danger" disabled={busy} title="Удалить проект" aria-label={`Удалить проект ${item.name}`} onClick={() => deleteProject(item)}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
+      {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button" disabled={busy} title="Скачать резервную копию только этого проекта" aria-label={`Скачать резервную копию проекта ${item.name}`} onClick={() => exportOneProject(item)}>⇩</button><button className="button" disabled={busy} title="Обновить сохранённый проект текущей работой" aria-label={`Обновить проект ${item.name} текущей работой`} onClick={() => updateProject(item)}>↻</button><button className="button" disabled={busy} title="Создать независимую копию" aria-label={`Создать копию проекта ${item.name}`} onClick={() => duplicateProject(item)}>⧉</button><button className="button danger" disabled={busy} title="Удалить проект" aria-label={`Удалить проект ${item.name}`} onClick={() => deleteProject(item)}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
     </div>
     <div className="library-list"><strong>Файлы и бланки ({assets.length})</strong>
       {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" disabled={busy} title="Удалить файл" aria-label={`Удалить файл ${item.name}`} onClick={() => deleteAsset(item)}>×</button></div>) : <small className="library-empty">Пока нет файлов и бланков.</small>}
     </div>
+    <label className={`button full import-button${busy ? " disabled" : ""}`}>Восстановить отдельный проект<input type="file" accept=".json,application/json" disabled={busy} onChange={importOneProject}/></label>
     <button className="button full" disabled={busy} onClick={exportBackup}>⇩ Создать полную резервную копию</button>
     <label className={`button full import-button${busy ? " disabled" : ""}`}>Восстановить резервную копию<input type="file" accept=".json,application/json" disabled={busy} onChange={importBackup}/></label>
     {note && <p className="worksheet-note" role="status">{note}</p>}
