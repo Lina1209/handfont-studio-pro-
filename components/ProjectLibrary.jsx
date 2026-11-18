@@ -43,9 +43,10 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
         if (!['ttf', 'otf', 'woff', 'woff2', 'pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) throw new Error(`Формат ${file.name} не поддерживается. Выберите шрифт TTF/OTF/WOFF/WOFF2 или бланк PDF/PNG/JPG/WebP.`);
-        await saveLibraryAsset({ name: file.name, type: file.type || 'font/' + ext, blob: file, source: 'uploaded' });
+        const mime = file.type || ({ ttf: 'font/ttf', otf: 'font/otf', woff: 'font/woff', woff2: 'font/woff2', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext]);
+        await saveLibraryAsset({ name: file.name, type: mime, blob: file, source: 'uploaded' });
       }
-      await refresh(); setNote(`Добавлено файлов шрифтов: ${files.length}.`);
+      await refresh(); setNote(`Добавлено файлов: ${files.length}.`);
     } catch (error) { setNote(error.message); } finally { setBusy(false); event.target.value = ''; }
   };
   const downloadAsset = async asset => {
@@ -57,7 +58,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
       setBusy(true);
       const backup = await exportLibraryBackup(project);
       downloadBlob(new Blob([JSON.stringify(backup)], { type: 'application/json' }), 'handfont-studio-full-backup.json');
-      setNote('Полная резервная копия создана: текущий проект, библиотека проектов и файлы шрифтов.');
+      setNote('Полная резервная копия создана: текущий проект, библиотека проектов, шрифты, PDF-бланки и сканы.');
     } catch (error) { setNote(error.message); } finally { setBusy(false); }
   };
   const importBackup = async event => {
@@ -87,7 +88,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
       {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить «${item.name}» из библиотеки?`)) { await removeLibraryProject(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
     </div>
     <div className="library-list"><strong>Файлы и бланки ({assets.length})</strong>
-      {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить файл «${item.name}»?`)) { await removeLibraryAsset(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет файлов шрифтов.</small>}
+      {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить файл «${item.name}»?`)) { await removeLibraryAsset(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет файлов и бланков.</small>}
     </div>
     <button className="button full" disabled={busy} onClick={exportBackup}>⇩ Создать полную резервную копию</button>
     <label className="button full import-button">Восстановить резервную копию<input type="file" accept=".json,application/json" onChange={importBackup}/></label>
