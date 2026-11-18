@@ -81,6 +81,27 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     } catch (error) { setNote(`Не удалось восстановить библиотеку: ${error.message}`); }
     finally { setBusy(false); event.target.value = ''; }
   };
+  const duplicateProject = async item => {
+    try {
+      setBusy(true);
+      const copy = await saveLibraryProject({ ...item.project, familyName: `${item.project.familyName || item.name} — копия` });
+      await refresh();
+      setNote(`Создана независимая копия «${copy.name}». Исходный проект не изменён.`);
+    } catch (error) { setNote(`Не удалось скопировать проект: ${error.message}`); }
+    finally { setBusy(false); }
+  };
+  const deleteProject = async item => {
+    if (!window.confirm(`Удалить «${item.name}» из библиотеки? Это не удалит уже скачанные резервные копии.`)) return;
+    try { setBusy(true); await removeLibraryProject(item.id); await refresh(); setNote(`Проект «${item.name}» удалён из библиотеки.`); }
+    catch (error) { setNote(`Не удалось удалить проект: ${error.message}`); }
+    finally { setBusy(false); }
+  };
+  const deleteAsset = async item => {
+    if (!window.confirm(`Удалить файл «${item.name}» из библиотеки? Если он нужен, сначала скачайте его или создайте резервную копию.`)) return;
+    try { setBusy(true); await removeLibraryAsset(item.id); await refresh(); setNote(`Файл «${item.name}» удалён из библиотеки.`); }
+    catch (error) { setNote(`Не удалось удалить файл: ${error.message}`); }
+    finally { setBusy(false); }
+  };
   const loadProject = item => {
     if (window.confirm(`Открыть «${item.name}»? Текущие изменения уже автоматически сохраняются в текущем проекте.`)) {
       onLoadProject(item.project); setNote(`Открыт проект «${item.name}».`);
@@ -94,10 +115,10 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     <button className="button full" disabled={busy} onClick={saveGeneratedFont}>＋ Создать TTF и добавить в библиотеку</button>
     <label className="button full import-button">Добавить файлы в библиотеку (шрифты и бланки)<input type="file" accept=".ttf,.otf,.woff,.woff2,.pdf,.png,.jpg,.jpeg,.webp,font/ttf,font/otf,font/woff,application/pdf,image/png,image/jpeg,image/webp" multiple onChange={uploadAssets}/></label>
     <div className="library-list"><strong>Проекты ({projects.length})</strong>
-      {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить «${item.name}» из библиотеки?`)) { await removeLibraryProject(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
+      {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button" disabled={busy} title="Создать копию" aria-label={`Создать копию проекта ${item.name}`} onClick={() => duplicateProject(item)}>⧉</button><button className="button danger" disabled={busy} title="Удалить проект" aria-label={`Удалить проект ${item.name}`} onClick={() => deleteProject(item)}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
     </div>
     <div className="library-list"><strong>Файлы и бланки ({assets.length})</strong>
-      {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить файл «${item.name}»?`)) { await removeLibraryAsset(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет файлов и бланков.</small>}
+      {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" disabled={busy} onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" disabled={busy} title="Удалить файл" aria-label={`Удалить файл ${item.name}`} onClick={() => deleteAsset(item)}>×</button></div>) : <small className="library-empty">Пока нет файлов и бланков.</small>}
     </div>
     <button className="button full" disabled={busy} onClick={exportBackup}>⇩ Создать полную резервную копию</button>
     <label className="button full import-button">Восстановить резервную копию<input type="file" accept=".json,application/json" onChange={importBackup}/></label>
