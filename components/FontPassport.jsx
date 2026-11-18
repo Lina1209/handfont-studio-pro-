@@ -8,7 +8,7 @@ function glyphSvg(glyph) {
     return `<path d="${d}" fill="none" stroke="#17191e" stroke-width="${Number(stroke.width)||70}" stroke-linecap="round" stroke-linejoin="round"/>`;
   }).join('');
   const outlines = (glyph?.outlines || []).filter(c => Array.isArray(c) && c.length >= 3).map(c => `M ${c.map(p => `${p.x} ${p.y}`).join(' L ')} Z`).join(' ');
-  return `<svg viewBox="0 0 800 1000" role="img">${strokes}<path d="${outlines}" fill="#17191e" fill-rule="evenodd"/></svg>`;
+  return `<svg viewBox="0 0 1000 1000" role="img"><g transform="translate(0 1000) scale(1 -1)">${strokes}<path d="${outlines}" fill="#17191e" fill-rule="evenodd"/></g></svg>`;
 }
 function printPassport(project) {
   const codes = Object.keys(project.glyphs || {}).map(Number).filter(code => hasGlyph(project.glyphs[code])).sort((a,b)=>a-b);
