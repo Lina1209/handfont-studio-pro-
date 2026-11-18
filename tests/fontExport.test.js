@@ -4,6 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
+import { SHEET_PAGES } from '../lib/worksheet.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -90,4 +91,12 @@ test('createZip rejects duplicate paths and unsupported input', () => {
   assert.throws(() => createZip([{ name: 'same.txt', data: 'a' }, { name: 'same.txt', data: 'b' }]), /Повторяющийся путь/);
   assert.throws(() => createZip([{ name: 'bad.bin', data: {} }]), /Некорректные данные/);
   assert.throws(() => createZip(null), /список файлов/);
+});
+
+
+test('worksheet generator contains seven printable pages with no duplicated symbols', () => {
+  assert.equal(SHEET_PAGES.length, 7);
+  assert.ok(SHEET_PAGES.every(page => page.length > 0 && page.length <= 24));
+  const allChars = SHEET_PAGES.flat();
+  assert.equal(new Set(allChars).size, allChars.length);
 });
