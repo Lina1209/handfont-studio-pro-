@@ -64,3 +64,6 @@ button{color:inherit}
 .ve-preview-svg{width:100%;height:100%;display:block}
 .ve-preview-empty{color:#8b90a0;font-size:12px;padding:20px;text-align:center}
 .ve-modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #2a2e39}
+
+/* Паспорт шрифта и каталог знаков */
+.passport-panel{padding:15px}.passport-panel h2{margin:7px 0 10px;font-size:14px;letter-spacing:.08em;text-transform:uppercase}.passport-panel textarea{width:100%;resize:vertical;background:#101217;border:1px solid #343742;border-radius:8px;padding:9px 10px;color:#f0ede8;font:inherit;font-size:10px}.passport-panel textarea:focus{outline:none;border-color:#d7b77e}.passport-glyph-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 10px;padding:9px;background:#12161d;border:1px solid #2d313b;border-radius:8px;font-size:10px}.passport-glyph-head span{color:#d7b77e}
