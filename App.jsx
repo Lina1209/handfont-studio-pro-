@@ -69,7 +69,15 @@ export default function App() {
         { name: 'source/handfont-project.json', data: JSON.stringify(project, null, 2) },
         { name: 'specimen/specimen.svg', data: fontSpecimenSvg(project) },
         { name: 'passport/font-passport.json', data: JSON.stringify({ familyName: project.familyName, metadata: project.metadata, passport: project.passport || {}, glyphInfo: project.glyphInfo || {} }, null, 2) },
-        { name: 'METADATA.json', data: JSON.stringify({ familyName: project.familyName, ...project.metadata, packageNote: 'Prepared by HandFont Studio.' }, null, 2) },
+        { name: 'METADATA.json', data: JSON.stringify({
+          familyName: project.familyName,
+          ...project.metadata,
+          author: project.passport?.author || project.metadata?.author || '',
+          description: project.passport?.description || project.metadata?.description || '',
+          license: project.passport?.license || project.metadata?.license || 'SIL Open Font License 1.1',
+          passport: project.passport || {},
+          packageNote: 'Prepared by HandFont Studio.'
+        }, null, 2) },
         { name: 'README.txt', data: `Font family: ${project.familyName}\nAuthor: ${project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: SIL Open Font License 1.1\n` }
       ];
       const files = await buildDistributionFiles(project, buildFont, styles, extras);
