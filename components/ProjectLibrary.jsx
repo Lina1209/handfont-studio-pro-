@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { buildFont, safeFilename } from '../lib/font.js';
 import { openWorksheetPrint } from '../lib/worksheet.js';
+import { validateFontAsset } from '../lib/fontFile.js';
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
   removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject
@@ -47,13 +48,18 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     const files = [...(event.target.files || [])];
     try {
       setBusy(true);
+      const prepared = [];
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
         if (!['ttf', 'otf', 'woff', 'woff2', 'pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) throw new Error(`Формат ${file.name} не поддерживается. Выберите шрифт TTF/OTF/WOFF/WOFF2 или бланк PDF/PNG/JPG/WebP.`);
-        const mime = file.type || ({ ttf: 'font/ttf', otf: 'font/otf', woff: 'font/woff', woff2: 'font/woff2', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext]);
-        await saveLibraryAsset({ name: file.name, type: mime, blob: file, source: 'uploaded' });
+        const fontMime = await validateFontAsset(file);
+        const fallbackMime = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext];
+        prepared.push({ file, mime: fontMime || file.type || fallbackMime });
       }
-      await refresh(); setNote(`Добавлено файлов: ${files.length}.`);
+      for (const item of prepared) {
+        await saveLibraryAsset({ name: item.file.name, type: item.mime, blob: item.file, source: 'uploaded' });
+      }
+      await refresh(); setNote(`Добавлено файлов: ${files.length}. Оригинальные бинарные данные сохранены без перекодирования.`);
     } catch (error) { setNote(error.message); } finally { setBusy(false); event.target.value = ''; }
   };
   const downloadAsset = async asset => {
