@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Test geometry helpers
+        run: npm test
+
       - name: Build site
         run: npm run build
 
