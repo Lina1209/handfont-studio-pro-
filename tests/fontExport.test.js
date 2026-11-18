@@ -8,6 +8,7 @@ import { SHEET_PAGES } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
+import { validateFontAsset } from '../lib/fontFile.js';
 
 
 const opentype = opentypeModule.default ?? opentypeModule;
@@ -333,4 +334,31 @@ test('autosave does not overwrite a valid recovery snapshot with a damaged prima
   assert.equal(JSON.parse(values.get(BACKUP_STORAGE_KEY)).familyName, 'Last known good');
   assert.equal(JSON.parse(values.get(STORAGE_KEY)).familyName, 'Recovered and edited');
   delete globalThis.localStorage;
+});
+
+
+test('font library upload validates TTF, OTF, WOFF and WOFF2 signatures', async () => {
+  const samples = [
+    ['sample.ttf', [0, 1, 0, 0], 'font/ttf'],
+    ['sample.otf', [79, 84, 84, 79], 'font/otf'],
+    ['sample.woff', [119, 79, 70, 70], 'font/woff'],
+    ['sample.woff2', [119, 79, 70, 50], 'font/woff2']
+  ];
+  for (const [name, bytes, mime] of samples) {
+    const file = new Blob([new Uint8Array(bytes)]);
+    file.name = name;
+    assert.equal(await validateFontAsset(file), mime);
+  }
+});
+
+test('font library upload rejects a mismatched or truncated font file', async () => {
+  const mismatch = new Blob(['NOPE']); mismatch.name = 'fake.woff2';
+  await assert.rejects(() => validateFontAsset(mismatch), /не соответствует формату/);
+  const truncated = new Blob(['TT']); truncated.name = 'short.ttf';
+  await assert.rejects(() => validateFontAsset(truncated), /слишком короткий/);
+});
+
+test('non-font library assets bypass font signature validation', async () => {
+  const pdf = new Blob(['%PDF']); pdf.name = 'worksheet.pdf';
+  assert.equal(await validateFontAsset(pdf), null);
 });
