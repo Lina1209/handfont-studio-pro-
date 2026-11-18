@@ -5,6 +5,7 @@ import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
 import { SHEET_PAGES } from '../lib/worksheet.js';
+import { STORAGE_KEY, defaultProject, loadProject, updateProjectMetadata } from '../lib/project.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
