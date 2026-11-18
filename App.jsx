@@ -5,6 +5,7 @@ import FontPassport from './components/FontPassport.jsx';
 import ProjectLibrary from './components/ProjectLibrary.jsx';
 import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
 import { resolveFontMetadata } from './lib/metadata.js';
+import { readProjectJsonFile } from './lib/projectImport.js';
 import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, updateProjectMetadata } from './lib/project.js';
 import { validateProject } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
@@ -194,63 +195,15 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text());
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
-          !parsed.glyphs || typeof parsed.glyphs !== 'object' || Array.isArray(parsed.glyphs)) {
-        throw new Error('В файле не найдена корректная библиотека символов.');
-      }
-      if (parsed.metadata != null && (typeof parsed.metadata !== 'object' || Array.isArray(parsed.metadata))) {
-        throw new Error('Раздел метаданных повреждён.');
-      }
-      if (parsed.passport != null && (typeof parsed.passport !== 'object' || Array.isArray(parsed.passport))) {
-        throw new Error('Паспорт шрифта повреждён.');
-      }
-      if (parsed.glyphInfo != null && (typeof parsed.glyphInfo !== 'object' || Array.isArray(parsed.glyphInfo))) {
-        throw new Error('Каталог знаков повреждён.');
-      }
-      for (const [code, info] of Object.entries(parsed.glyphInfo || {})) {
-        const number = Number(code);
-        if (!Number.isInteger(number) || number < 0 || number > 0x10ffff ||
-            (number >= 0xd800 && number <= 0xdfff) ||
-            !info || typeof info !== 'object' || Array.isArray(info)) {
-          throw new Error(`Описание знака ${code} повреждено.`);
-        }
-      }
-      for (const [code, item] of Object.entries(parsed.glyphs)) {
-        const number = Number(code);
-        if (!Number.isInteger(number) || number < 0 || number > 0x10ffff || (number >= 0xd800 && number <= 0xdfff)) {
-          throw new Error(`Некорректный Unicode-код символа: ${code}.`);
-        }
-        if (!item || typeof item !== 'object' || Array.isArray(item)) {
-          throw new Error(`Данные символа U+${number.toString(16).toUpperCase()} повреждены.`);
-        }
-        if (item.strokes != null && !Array.isArray(item.strokes)) {
-          throw new Error(`Список штрихов символа U+${number.toString(16).toUpperCase()} повреждён.`);
-        }
-        if (item.outlines != null && !Array.isArray(item.outlines)) {
-          throw new Error(`Список контуров символа U+${number.toString(16).toUpperCase()} повреждён.`);
-        }
-      }
-      const base = defaultProject();
-      const candidate = {
-        ...base,
-        ...parsed,
-        metadata: { ...base.metadata, ...(parsed.metadata || {}) },
-        passport: { ...(parsed.passport || {}) },
-        glyphInfo: { ...(parsed.glyphInfo || {}) },
-        glyphs: { ...base.glyphs, ...parsed.glyphs }
-      };
-      const validation = validateProject(candidate);
-      if (validation.errors.length) {
-        throw new Error(validation.errors.slice(0, 3).map(item => item.title).join('; '));
-      }
+      const candidate = await readProjectJsonFile(file);
       setProject(candidate);
       setHistory({});
-      setMessage('Проект загружен. Проверьте предупреждения о качестве перед экспортом.');
+      setMessage('Проект проверен и загружен. Предупреждения о качестве проверьте перед экспортом.');
     } catch (error) {
       setMessage(`Не удалось загрузить проект: ${error.message}`);
+    } finally {
+      event.target.value = '';
     }
-    event.target.value = '';
   };
   const reset = () => { if (!window.confirm('Очистить все нарисованные символы?')) return; setProject(previous => ({ ...previous, glyphs: Object.fromEntries(Object.entries(previous.glyphs).map(([key, item]) => [key, { ...item, strokes: [], outlines: [] }])) })); setHistory({}); setMessage('Рисунки очищены.'); };
   const fitWidth = () => {
