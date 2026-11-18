@@ -1,73 +1,116 @@
-import { useEffect, useState } from 'react';
-import { scanWorksheetFile, previewWorksheetFile, SHEET_PAGES } from '../lib/worksheet.js';
+import { useEffect, useMemo, useState } from 'react';
+import { scanWorksheetFile, previewWorksheetFile, SHEET_PAGES, getWorksheetPdfPageCount } from '../lib/worksheet.js';
 import { buildFont, downloadBlob, safeFilename } from '../lib/font.js';
 
 export default function WorksheetImport({ onImport, onPrint }) {
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(0);
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [note, setNote] = useState('');
   const [scanResult, setScanResult] = useState(null);
+  const activeFile = files[selectedFile] || null;
+  const pageOptions = useMemo(() => SHEET_PAGES.map((chars, index) => ({ index, chars })), []);
 
   useEffect(() => {
     let cancelled = false;
     setPreviewUrl('');
-    setScanResult(null);
-    if (!file) return () => { cancelled = true; };
-    previewWorksheetFile(file, page).then(url => {
+    if (!activeFile) return () => { cancelled = true; };
+    const previewPage = files.length > 1 ? selectedFile : page;
+    previewWorksheetFile(activeFile, previewPage).then(url => {
       if (!cancelled) setPreviewUrl(url);
     }).catch(error => {
       if (!cancelled) setNote(error.message || 'Не удалось показать страницу файла.');
     });
     return () => { cancelled = true; };
-  }, [file, page]);
+  }, [activeFile, selectedFile, page, files.length]);
 
-  const chooseFile = event => {
-    const next = event.target.files?.[0] || null;
-    setFile(next);
+  const chooseFiles = event => {
+    const selected = [...(event.target.files || [])];
+    if (selected.length > 7) {
+      setNote('Можно загрузить не более 7 файлов за один раз.');
+      setFiles(selected.slice(0, 7));
+    } else {
+      setFiles(selected);
+      setNote(selected.length ? `Выбрано файлов: ${selected.length}. Порядок файлов соответствует страницам бланка.` : '');
+    }
+    setSelectedFile(0);
+    setPage(0);
     setScanResult(null);
-    setNote('');
+    event.target.value = '';
   };
-  const importPage = async () => {
-    if (!file) { setNote('Сначала выберите фото или скан бланка.'); return; }
-    setBusy(true); setNote('Распознаю контрастные штрихи…');
+
+  const importAll = async () => {
+    if (!files.length) { setNote('Сначала выберите заполненный PDF или до 7 фото/сканов страниц.'); return; }
+    setBusy(true);
+    setScanResult(null);
+    const collected = [], errors = [], skipped = [];
+    let processed = 0;
     try {
-      const scan = await scanWorksheetFile(file, page);
-      const glyphs = Array.isArray(scan?.glyphs) ? scan.glyphs : [];
-      if (!glyphs.length) throw new Error('На выбранной странице не найдено символов.');
-      onImport(scan);
-      setScanResult(scan);
-      const skipped = Array.isArray(scan.skipped) ? scan.skipped : [];
-      const alignment = scan.alignmentMode === 'four-mark' ? 'Лист выровнен по четырём меткам.' : scan.alignmentMode === 'three-mark-affine' ? 'Найдены 3 из 4 меток: применено резервное выравнивание. Проверьте символы, особенно у краёв листа.' : 'Выравнивание не подтверждено.';
-      setNote(`Импортировано символов: ${glyphs.length}. ${alignment}${skipped.length ? ` Пропущены пустые/нечёткие ячейки: ${skipped.join(' ')}.` : ''} Проверьте каждый знак в библиотеке.`);
-    } catch (error) { setNote(error.message || 'Не удалось обработать изображение.'); }
+      if (files.length > 1) {
+        for (let index = 0; index < files.length; index++) {
+          try {
+            setNote(`Распознаю файл ${index + 1} из ${files.length}…`);
+            const result = await scanWorksheetFile(files[index], index);
+            collected.push(...(result.glyphs || []));
+            skipped.push(...(result.skipped || []));
+            processed++;
+          } catch (error) { errors.push(`Страница ${index + 1}: ${error.message}`); }
+        }
+      } else {
+        const file = files[0];
+        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+        if (isPdf) {
+          const pageCount = await getWorksheetPdfPageCount(file);
+          const total = Math.min(pageCount, SHEET_PAGES.length);
+          for (let index = 0; index < total; index++) {
+            try {
+              setNote(`Распознаю страницу ${index + 1} из ${total}…`);
+              const result = await scanWorksheetFile(file, index);
+              collected.push(...(result.glyphs || []));
+              skipped.push(...(result.skipped || []));
+              processed++;
+            } catch (error) { errors.push(`Страница ${index + 1}: ${error.message}`); }
+          }
+        } else {
+          const result = await scanWorksheetFile(file, page);
+          collected.push(...(result.glyphs || []));
+          skipped.push(...(result.skipped || []));
+          processed++;
+        }
+      }
+      if (!collected.length) throw new Error(errors[0] || 'Не удалось распознать символы. Проверьте качество сканов и угловые метки.');
+      const combined = { glyphs: collected, skipped, pagesProcessed: processed, pageErrors: errors };
+      onImport(combined);
+      setScanResult(combined);
+      setNote(`Импортировано символов: ${collected.length}. Обработано страниц: ${processed}.${errors.length ? ` Есть страницы для повторной проверки: ${errors.map(item => item.split(':')[0]).join(', ')}.` : ''} Проверьте каждый знак в библиотеке.`);
+    } catch (error) { setNote(error.message || 'Не удалось обработать файлы.'); }
     finally { setBusy(false); }
   };
 
   const downloadRecognizedFont = () => {
     if (!scanResult?.glyphs?.length) return;
     try {
-      const familyName = `HandFont-Page-${page + 1}`;
+      const familyName = 'HandFont-Recognized-Pages';
       const glyphs = Object.fromEntries(scanResult.glyphs.map(item => [item.code, item]));
       const font = buildFont({ familyName, glyphs });
       downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(familyName)}.ttf`);
-      setNote(`TTF-файл страницы ${page + 1} скачан. В нём ${scanResult.glyphs.length} распознанных символов. Проверьте каждый знак перед использованием.`);
-    } catch (error) {
-      setNote(`Не удалось создать TTF: ${error.message}`);
-    }
+      setNote(`TTF-файл скачан. В нём ${scanResult.glyphs.length} распознанных символов. Проверьте каждый знак перед использованием.`);
+    } catch (error) { setNote(`Не удалось создать TTF: ${error.message}`); }
   };
 
   return <section className="panel worksheet-panel">
     <div className="section-heading"><div><small>РУКОПИСНЫЙ ВВОД</small><h2>Бланк и скан</h2></div><span className="worksheet-icon">▦</span></div>
-    <p className="worksheet-copy">Распечатайте PDF-бланк, впишите символы от руки и загрузите заполненный PDF (или фото/скан отдельной страницы). Выберите номер страницы, распознайте ячейки и скачайте полученный TTF-шрифт.</p>
-    <button className="button full" type="button" onClick={onPrint}>▤ Скачать / распечатать бланк</button>
-    <label className="field-label worksheet-file">PDF, фото или скан<input type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" onChange={chooseFile}/></label>
-    <label className="field-label">Страница бланка<select value={page} onChange={event => setPage(Number(event.target.value))}>{SHEET_PAGES.map((chars, index) => <option value={index} key={index}>Страница {index + 1} — {chars[0]}…{chars.at(-1)}</option>)}</select></label>
-    {previewUrl && <img className="worksheet-preview" src={previewUrl} alt={`Предпросмотр страницы ${page + 1} загруженного бланка`}/>}
-    <button className="button full primary" type="button" disabled={busy || !file} onClick={importPage}>{busy ? 'Обработка…' : '⇧ Распознать страницу'}</button>
+    <p className="worksheet-copy">Скачайте и распечатайте полный семистраничный бланк. Заполните его от руки и загрузите один многостраничный PDF или до 7 отдельных фото/сканов. При загрузке отдельных файлов соблюдайте порядок страниц.</p>
+    <button className="button full" type="button" onClick={onPrint}>▤ Скачать / распечатать все 7 страниц</button>
+    <label className="field-label worksheet-file">PDF или до 7 фото/сканов<input type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" multiple onChange={chooseFiles}/></label>
+    {files.length > 0 && <div className="worksheet-file-list"><strong>Загружено: {files.length}/7</strong>{files.map((file, index) => <button type="button" key={`${file.name}-${index}`} className={selectedFile === index ? 'selected' : ''} onClick={() => { setSelectedFile(index); if (files.length > 1) setPage(index); }}><span>{index + 1}. {file.name}</span><small>{Math.max(1, Math.round(file.size / 1024))} КБ</small></button>)}</div>}
+    {files.length === 1 && !(activeFile?.type === 'application/pdf' || /\.pdf$/i.test(activeFile?.name || '')) && <label className="field-label">Страница бланка<select value={page} onChange={event => setPage(Number(event.target.value))}>{pageOptions.map(({ index, chars }) => <option value={index} key={index}>Страница {index + 1} — {chars[0]}…{chars.at(-1)}</option>)}</select></label>}
+    {previewUrl && <img className="worksheet-preview" src={previewUrl} alt="Предпросмотр загруженной страницы"/>}
+    <button className="button full primary" type="button" disabled={busy || !files.length} onClick={importAll}>{busy ? 'Обработка…' : files.length > 1 ? '⇧ Распознать все загруженные страницы' : '⇧ Распознать бланк / все страницы PDF'}</button>
     {scanResult?.glyphs?.length > 0 && <button className="button full" type="button" onClick={downloadRecognizedFont}>↓ Скачать распознанные символы как TTF</button>}
     {note && <p className="worksheet-note" role="status">{note}</p>}
-    <small className="worksheet-warning">PDF автоматически преобразуется в изображение выбранной страницы. Для точного выравнивания желательно сохранить все четыре метки. Если одна потеряна, применяется резервное выравнивание по трём меткам; при сильной перспективе обязательно проверьте каждый символ. Импортированные пиксельные контуры требуют ручной проверки и очистки. Экспорт не гарантирует соответствие требованиям Google Fonts.</small>
+    <small className="worksheet-warning">Для точного выравнивания нужны четыре угловые метки. При трёх метках применяется резервное аффинное выравнивание; при сильной перспективе точность ниже. Импортированные контуры обязательно проверьте перед экспортом.</small>
   </section>;
 }
