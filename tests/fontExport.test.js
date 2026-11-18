@@ -43,6 +43,31 @@ test('buildFont writes a readable TTF with author, version and license metadata'
   assert.equal(parsed.charToGlyph('A').unicode, 65);
 });
 
+test('buildFont preserves separate outer, hole and detached contours in one glyph', () => {
+  const project = {
+    familyName: 'Contour QA',
+    glyphs: {
+      66: {
+        advanceWidth: 735,
+        strokes: [],
+        outlines: [
+          [{ x: 40, y: 0 }, { x: 560, y: 0 }, { x: 560, y: 700 }, { x: 40, y: 700 }],
+          [{ x: 180, y: 180 }, { x: 180, y: 520 }, { x: 420, y: 520 }, { x: 420, y: 180 }],
+          [{ x: 620, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 80 }, { x: 620, y: 80 }]
+        ]
+      }
+    }
+  };
+  const parsed = opentype.parse(buildFont(project).toArrayBuffer());
+  const glyph = parsed.charToGlyph('B');
+  assert.equal(glyph.advanceWidth, 735);
+  assert.equal(glyph.path.commands.filter(command => command.type === 'M').length, 3);
+  assert.equal(glyph.path.commands.filter(command => command.type === 'Z').length, 3);
+  assert.ok(glyph.path.commands.every(command =>
+    Object.values(command).every(value => typeof value !== 'number' || Number.isFinite(value))
+  ));
+});
+
 test('ttfToWoff creates a WOFF container with consistent header lengths', async () => {
   const ttf = buildFont(sampleProject()).toArrayBuffer();
   const woff = await ttfToWoff(ttf);
