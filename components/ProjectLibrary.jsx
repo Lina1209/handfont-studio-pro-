@@ -64,8 +64,10 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     try {
       setBusy(true);
       const backup = await exportLibraryBackup(project);
-      downloadBlob(new Blob([JSON.stringify(backup)], { type: 'application/json' }), 'handfont-studio-full-backup.json');
-      setNote('Полная резервная копия создана: текущий проект, библиотека проектов, шрифты, PDF-бланки и сканы.');
+      const backupBlob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+      if (backupBlob.size > 150 * 1024 * 1024) throw new Error('Полная резервная копия превышает лимит 150 МБ. Уменьшите объём библиотеки и повторите экспорт.');
+      downloadBlob(backupBlob, 'handfont-studio-full-backup.json');
+      setNote('Полная резервная копия создана: текущий проект, библиотека проектов, шрифты, PDF-бланки и сканы. Сохраните файл отдельно от устройства.');
     } catch (error) { setNote(error.message); } finally { setBusy(false); }
   };
   const importBackup = async event => {
