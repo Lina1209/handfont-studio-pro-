@@ -30,7 +30,7 @@ test('converts a contour with a hole and nested island', () => {
 
 test('erase mask removes only its intersection with the source', () => {
   const result = applyEraseRestoreMasks([square(0, 0, 100, 100)], [square(20, 20, 40, 40)]);
-  assert.ok(Math.abs(filledArea(result) - 8000) < 1e-5);
+  assert.ok(Math.abs(filledArea(result) - 9600) < 1e-5);
 });
 
 test('restore mask restores only source area, not outside it', () => {
@@ -39,7 +39,7 @@ test('restore mask restores only source area, not outside it', () => {
     [square(20, 20, 80, 80)],
     [square(40, 40, 120, 120)]
   );
-  assert.ok(Math.abs(filledArea(result) - 9600) < 1e-5);
+  assert.ok(Math.abs(filledArea(result) - 8000) < 1e-5);
 });
 
 test('keeps original geometry when no masks are supplied', () => {
