@@ -10,6 +10,7 @@ import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
 import { validateFontAsset } from '../lib/fontFile.js';
 import { crc32 } from '../lib/checksum.js';
+import { importLibraryBackup } from '../lib/library.js';
 
 
 const opentype = opentypeModule.default ?? opentypeModule;
@@ -372,4 +373,55 @@ test('backup asset checksum detects accidental changes in binary data', () => {
   assert.equal(crc32(original), crc32(restored));
   assert.notEqual(crc32(original), crc32(damaged));
   assert.equal(crc32(new TextEncoder().encode('123456789')), 'cbf43926');
+});
+
+
+test('library backup rejects malformed project metadata before touching IndexedDB', async () => {
+  const backup = {
+    format: 'handfont-studio-library-backup', version: 1,
+    projects: [{ id: 'p1', name: '   ', project: sampleProject() }],
+    assets: [], currentProject: sampleProject()
+  };
+  await assert.rejects(() => importLibraryBackup(backup), /Название проекта.*неверное имя/);
+});
+
+test('library backup rejects duplicate project and asset identifiers before restore', async () => {
+  const project = sampleProject();
+  const duplicateProjects = {
+    format: 'handfont-studio-library-backup', version: 1,
+    projects: [
+      { id: 'same', name: 'First', project },
+      { id: 'same', name: 'Second', project }
+    ],
+    assets: []
+  };
+  await assert.rejects(() => importLibraryBackup(duplicateProjects), /повторяется идентификатор проекта/);
+  const duplicateAssets = {
+    format: 'handfont-studio-library-backup', version: 1,
+    projects: [],
+    assets: [
+      { id: 'same', name: 'one.ttf', data: 'AA==' },
+      { id: 'same', name: 'two.ttf', data: 'AA==' }
+    ]
+  };
+  await assert.rejects(() => importLibraryBackup(duplicateAssets), /повторяется идентификатор файла/);
+});
+
+test('library backup rejects invalid asset metadata and corrupted checksums before restore', async () => {
+  const invalidName = {
+    format: 'handfont-studio-library-backup', version: 1,
+    projects: [],
+    assets: [{ id: 'a1', name: '', data: 'AA==' }]
+  };
+  await assert.rejects(() => importLibraryBackup(invalidName), /Название файла.*неверное имя/);
+  const corrupted = new Uint8Array([1, 2, 3]);
+  const invalidChecksum = {
+    format: 'handfont-studio-library-backup', version: 1,
+    projects: [],
+    assets: [{
+      id: 'a1', name: 'font.ttf', data: btoa(String.fromCharCode(...corrupted)),
+      size: 3, checksum: '00000000'
+    }]
+  };
+  await assert.rejects(() => importLibraryBackup(invalidChecksum), /Контрольная сумма.*не совпадает/);
 });
