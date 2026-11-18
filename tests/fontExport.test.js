@@ -131,3 +131,45 @@ test('createZip rejects NUL bytes in entry names', () => {
   const invalidName = `bad${String.fromCharCode(0)}name.txt`;
   assert.throws(() => createZip([{ name: invalidName, data: 'x' }]), /некорректное имя файла/);
 });
+
+
+test('loadProject restores passport and glyph catalog while normalizing malformed sections', () => {
+  const previousStorage = globalThis.localStorage;
+  const saved = {
+    ...defaultProject(),
+    familyName: 'Saved HandFont',
+    metadata: { author: 'Saved Author', version: '1.003' },
+    passport: { author: 'Saved Author', year: '2026', history: 'Origin story' },
+    glyphInfo: { 65: { name: 'Alpha', mapping: 'A', description: 'First sign' } },
+    updatedAt: 123
+  };
+  globalThis.localStorage = { getItem: key => key === STORAGE_KEY ? JSON.stringify(saved) : null };
+  try {
+    const loaded = loadProject();
+    assert.equal(loaded.familyName, 'Saved HandFont');
+    assert.deepEqual(loaded.passport, saved.passport);
+    assert.deepEqual(loaded.glyphInfo, saved.glyphInfo);
+    assert.equal(loaded.metadata.author, 'Saved Author');
+    assert.equal(loaded.updatedAt, 123);
+    globalThis.localStorage = { getItem: () => JSON.stringify({ ...saved, passport: 'bad', glyphInfo: null }) };
+    const normalized = loadProject();
+    assert.deepEqual(normalized.passport, {});
+    assert.deepEqual(normalized.glyphInfo, {});
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+});
+
+test('project metadata edits keep passport author, description and license in sync', () => {
+  const initial = {
+    metadata: { author: 'Old', description: 'Old description', license: 'Old license', version: '1.000' },
+    passport: { author: 'Old', description: 'Old description', license: 'Old license', year: '2026' }
+  };
+  const updated = updateProjectMetadata(initial, 'author', 'New Author');
+  assert.equal(updated.metadata.author, 'New Author');
+  assert.equal(updated.passport.author, 'New Author');
+  assert.equal(updated.passport.year, '2026');
+  assert.equal(updated.metadata.version, '1.000');
+  assert.equal(updateProjectMetadata(updated, 'version', '1.005').passport.author, 'New Author');
+});
