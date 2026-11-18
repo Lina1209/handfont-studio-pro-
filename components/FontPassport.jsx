@@ -30,7 +30,13 @@ function printPassport(project) {
 export default function FontPassport({ project, activeCode, onChange }) {
   const meta = project.passport || {};
   const info = project.glyphInfo?.[activeCode] || {};
-  const updateMeta = (key, value) => onChange(previous => ({...previous, passport:{...(previous.passport||{}),[key]:value}}));
+  const updateMeta = (key, value) => onChange(previous => ({
+    ...previous,
+    passport: { ...(previous.passport || {}), [key]: value },
+    ...(key === 'author' || key === 'description' || key === 'license'
+      ? { metadata: { ...(previous.metadata || {}), [key]: value } }
+      : {})
+  }));
   const updateGlyph = (key, value) => onChange(previous => ({...previous, glyphInfo:{...(previous.glyphInfo||{}),[activeCode]:{...(previous.glyphInfo?.[activeCode]||{}),[key]:value}}}));
   return <section className="panel passport-panel">
     <div className="section-heading"><div><small>ДОКУМЕНТАЦИЯ ПРОЕКТА</small><h2>Паспорт шрифта</h2></div><span className="worksheet-icon">✧</span></div>
