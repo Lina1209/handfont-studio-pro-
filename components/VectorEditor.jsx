@@ -666,7 +666,11 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const s = snapshot || clone(stateRef.current.objects);
     let next = clone(stateRef.current.objects);
     if (mutator) next = mutator(next) || next;
-    for (const o of next) normalizeObject(o);
+    // Любое обычное редактирование геометрии делает сохранённый источник восстановления устаревшим.
+    for (const o of next) {
+      if (o._restoreSourceContours) delete o._restoreSourceContours;
+      normalizeObject(o);
+    }
     pushHistory(s);
     setObjects(next);
     setMessage('Изменено. «Применить» запишет результат в букву ' + (char === ' ' ? '(пробел)' : char) + '.');
@@ -1419,8 +1423,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       }
       if (touched) {
         changed = true;
+        // Храним исходные кривые только до следующего обычного изменения объекта.
+        // Метаданные не участвуют в TTF/OTF экспорте: экспорт читает только contours.
+        if (!o._restoreSourceContours) o._restoreSourceContours = clone(o.contours);
         o.contours = keep;
-        if (!keep.length) { list.splice(oi, 1); if (stateRef.current.sel === o.id) { setSel(null); setSelNode(null); } }
+        // Даже полностью стёртый объект временно сохраняется как невидимая цель
+        // для локального восстановления, вместо безвозвратного удаления.
+        if (!keep.length && stateRef.current.sel === o.id) { setSel(null); setSelNode(null); }
       }
     }
     return changed;
