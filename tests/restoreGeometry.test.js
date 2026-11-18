@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEraseRestoreMasks, buildBrushMask, contoursToMultiPolygon, multiPolygonToContours } from '../lib/restoreGeometry.js';
+import { applyEraseRestoreMasks, buildBrushMask, buildRestorePatch, contoursToMultiPolygon, multiPolygonToContours } from '../lib/restoreGeometry.js';
 
 const square = (x1, y1, x2, y2) => [
   { x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }
@@ -40,6 +40,19 @@ test('restore mask restores only source area, not outside it', () => {
     [square(40, 40, 120, 120)]
   );
   assert.ok(Math.abs(filledArea(result) - 8000) < 1e-5);
+});
+
+test('restore patch contains only missing source area under the brush', () => {
+  const source = [square(0, 0, 100, 100)];
+  const current = [square(0, 0, 40, 100), square(60, 0, 100, 100)];
+  const patch = buildRestorePatch(current, source, [square(30, 20, 70, 80)]);
+  assert.ok(Math.abs(filledArea(patch) - 1200) < 1e-5);
+});
+
+test('restore patch does not duplicate geometry already present', () => {
+  const source = [square(0, 0, 100, 100)];
+  const patch = buildRestorePatch(source, source, [square(20, 20, 80, 80)]);
+  assert.equal(patch.length, 0);
 });
 
 test('keeps original geometry when no masks are supplied', () => {
