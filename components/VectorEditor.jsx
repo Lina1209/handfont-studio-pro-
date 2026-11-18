@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, useCallback } from 'react';
 import * as opentypeModule from 'opentype.js';
 import { METRICS } from '../lib/project.js';
 import { strokeToContours } from '../lib/geometry.js';
+import { buildBrushMask, buildRestorePatch } from '../lib/restoreGeometry.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -556,6 +557,7 @@ const TOOL_DEFS = [
   ['pen', 'P', 'Перо Безье'],
   ['brush', 'B', 'Кисть (штрих)'],
   ['eraser', 'E', 'Ластик'],
+  ['restore', 'C', 'Восстановление фрагмента'],
   ['hand', 'H', 'Рука (панорама)']
 ];
 
@@ -622,6 +624,8 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [eraserR, setEraserR] = useState(45);
   const [eraserSoftness, setEraserSoftness] = useState(35);
   const [eraserMode, setEraserMode] = useState('brush');
+  const [restoreRadius, setRestoreRadius] = useState(42);
+  const [restoreSoftness, setRestoreSoftness] = useState(25);
   const [message, setMessage] = useState('Вставьте узор, букву, знак или картинку — всё привяжется к направляющим шрифта.');
   const [importOpen, setImportOpen] = useState(false);
   const [importTab, setImportTab] = useState('pattern');
@@ -645,7 +649,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const [, forceRender] = useState(0);
 
   const stateRef = useRef({});
-  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, eraserSoftness, eraserMode, polygonSides, showGuides, showGrid, snapToGrid };
+  stateRef.current = { objects, tool, sel, selMode, selNode, selectedNodes, nodeMultiSelect, view, brushWidth, eraserR, eraserSoftness, eraserMode, restoreRadius, restoreSoftness, polygonSides, showGuides, showGrid, snapToGrid };
   const gestureRef = useRef(null);
   const penRef = useRef({ nodes: [], cursor: null, dragging: false, dragNode: null, freehand: [] });
   const brushRef = useRef(null);
@@ -906,6 +910,17 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
           ctx.beginPath();ctx.arc(X(groupBB.cx),Y(top),6.5,0,Math.PI*2);ctx.fill();ctx.stroke();
           ctx.restore();
         }
+      }
+      const restoreGesture = g && g.type === 'restore' ? g : null;
+      if (restoreGesture?.preview?.length) {
+        ctx.save(); ctx.globalAlpha = 0.58; ctx.fillStyle = '#65d6a5'; ctx.strokeStyle = '#8df0c1'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (const c of restoreGesture.preview) { if (!c.nodes?.length) continue; ctx.moveTo(X(c.nodes[0].x), Y(c.nodes[0].y)); for (let i = 1; i < c.nodes.length; i++) ctx.lineTo(X(c.nodes[i].x), Y(c.nodes[i].y)); ctx.closePath(); }
+        ctx.fill('evenodd'); ctx.stroke(); ctx.restore();
+      }
+      if (st.tool === 'restore' && eraserPosRef.current) {
+        ctx.strokeStyle = '#65d6a5'; ctx.fillStyle = 'rgba(101,214,165,.08)'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(X(eraserPosRef.current.x), Y(eraserPosRef.current.y), st.restoreRadius * scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
       if (st.tool === 'eraser' && eraserPosRef.current) {
         ctx.strokeStyle = '#ff8585'; ctx.fillStyle = 'rgba(255,133,133,.08)'; ctx.lineWidth = 1.2;
@@ -1435,6 +1450,18 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     return changed;
   }
 
+  function updateRestorePreview(g, point) {
+    if (point && (!g.points.length || dist(point, g.points[g.points.length - 1]) > Math.max(1.5, restoreRadius * 0.08))) g.points.push({ x: F(point.x), y: F(point.y) });
+    const target = stateRef.current.objects.find(o => o.id === g.objId);
+    if (!target?._restoreSourceContours) { g.preview = []; return; }
+    const source = target._restoreSourceContours.map(c => flattenContour(c, 4)).filter(r => r.length >= 3);
+    const current = target.contours.map(c => flattenContour(c, 4)).filter(r => r.length >= 3);
+    const mask = buildBrushMask(g.points, stateRef.current.restoreRadius);
+    const patch = buildRestorePatch(current, source, mask);
+    const softness = Math.max(0, Math.min(0.45, stateRef.current.restoreSoftness / 220));
+    g.preview = patch.map(ring => ({ nodes: smoothNodes(ring.map(p => ({ x: F(p.x), y: F(p.y), hIn: null, hOut: null, smooth: false })), softness) }));
+  }
+
   /* ===== События указателя ===== */
   const onPointerDown = e => {
     if (importOpenRef.current) return;
@@ -1523,6 +1550,20 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       rerender();
       return;
     }
+    else if (st.tool === 'restore') {
+      const candidates = st.objects.slice().reverse();
+      let target = null;
+      for (const candidate of candidates) {
+        if (!candidate._restoreSourceContours?.length) continue;
+        const sourceRings = candidate._restoreSourceContours.map(c => flattenContour(c, 5));
+        if (sourceRings.reduce((sum, ring) => sum + windingAt(p, ring), 0) !== 0) { target = candidate; break; }
+      }
+      if (!target) { setMessage('Под кистью нет ранее стёртого фрагмента.'); return; }
+      const g = { type: 'restore', snap: snap(), objId: target.id, points: [], preview: [] };
+      gestureRef.current = g;
+      updateRestorePreview(g, p);
+      rerender();
+    }
     else if (st.tool === 'eraser') {
       gestureRef.current = { type: 'erase', snap: snap(), last: p, changed: false,
         upd(pp) {
@@ -1558,8 +1599,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     const raw = posFromEvent(e);
     const st = stateRef.current;
     const p = st.snapToGrid ? { x: Math.round(raw.x / 100) * 100, y: Math.round(raw.y / 100) * 100 } : raw;
-    if (st.tool === 'eraser') eraserPosRef.current = p;
+    if (st.tool === 'eraser' || st.tool === 'restore') eraserPosRef.current = p;
     const g = gestureRef.current;
+    if (g?.type === 'restore') { e.preventDefault(); updateRestorePreview(g, p); rerender(); return; }
     if (g) { e.preventDefault(); g.upd(p, e); rerender(); return; }
     if (brushRef.current) {
       e.preventDefault();
@@ -1626,6 +1668,13 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
         }
       }
       else if (g.type === 'erase') { if (g.changed) { pushHistory(g.snap); setObjects(clone(stateRef.current.objects)); setMessage('Ластик применён.'); } }
+      else if (g.type === 'restore') {
+        if (g.preview?.length) {
+          const next = clone(stateRef.current.objects);
+          const target = next.find(o => o.id === g.objId);
+          if (target) { target.contours.push(...clone(g.preview)); pushHistory(g.snap); setObjects(next); setSel(target.id); setMessage('Фрагмент восстановлен. Действие можно отменить кнопкой «Шаг назад».'); }
+        } else setMessage('В этой области нет утраченной геометрии для восстановления.');
+      }
       else if (g.type === 'moveOrToggle') {
         if (g.moved && g.map) bakeGesture({ ...g, type: 'transform' });
         else if (g.toggle) setSelMode(m => m === 'scale' ? 'rotate' : 'scale');
@@ -2399,6 +2448,11 @@ const roundSelectedCorner = () => {
           <button className="button" type="button" disabled={!historyRef.current.u.length} onClick={undo} title="Вернуть последнее действие ластика">↶ Шаг назад</button>
           <span className="ve-hint">{eraserMode === 'brush' ? 'Стирайте участки контура небольшими движениями. Мягкость действует только на новые края разрыва; 0% оставляет их острыми.' : eraserMode === 'node' ? 'Коснитесь узла, чтобы удалить только его. Контур из трёх узлов удаляется как отдельная часть.' : 'Коснитесь объекта, затем подтвердите удаление кнопкой. Остальные объекты не затрагиваются.'} Отдельное действие можно отменить кнопкой «Шаг назад».</span>
         </>}
+        {tool === 'restore' && <>
+          <label className="ve-range">Размер кисти восстановления<input type="range" min="8" max="180" step="2" value={restoreRadius} onChange={e => setRestoreRadius(Number(e.target.value))}/><b>{restoreRadius}</b></label>
+          <label className="ve-range">Мягкость стыков<input type="range" min="0" max="100" step="5" value={restoreSoftness} onChange={e => setRestoreSoftness(Number(e.target.value))}/><b>{restoreSoftness}%</b></label>
+          <span className="ve-hint">Проведите по ранее стёртому месту. Зелёная область — предпросмотр. Отпустите палец, чтобы применить; Undo отменит действие.</span>
+        </>}
         {tool === 'hand' && <span className="ve-hint">Перетаскивайте холст. Колесо мыши — зум.</span>}
         <span className="ve-flex"/>
         <button className="button" onClick={undo} title="Ctrl+Z">↩</button>
@@ -2410,7 +2464,7 @@ const roundSelectedCorner = () => {
       <div className="ve-body">
         <div className="ve-toolbox">
           {TOOL_DEFS.map(([t, key, title]) => <button key={t} className={`ve-tool ${tool === t ? 'active' : ''}`} title={`${title} (${key})`} onClick={() => setTool(t)}>
-            {t === 'select' ? '➤' : t === 'line' ? '／' : t === 'rect' ? '□' : t === 'ellipse' ? '◯' : t === 'polygon' ? '⬡' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : '✋'}
+            {t === 'select' ? '➤' : t === 'line' ? '／' : t === 'rect' ? '□' : t === 'ellipse' ? '◯' : t === 'polygon' ? '⬡' : t === 'node' ? '◇' : t === 'pen' ? '✒' : t === 'brush' ? '✎' : t === 'eraser' ? '⌫' : t === 'restore' ? '↶' : '✋'}
             <small>{key}</small>
           </button>)}
         </div>
