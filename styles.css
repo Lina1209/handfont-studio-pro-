@@ -67,3 +67,31 @@ button{color:inherit}
 
 /* Паспорт шрифта и каталог знаков */
 .passport-panel{padding:15px}.passport-panel h2{margin:7px 0 10px;font-size:14px;letter-spacing:.08em;text-transform:uppercase}.passport-panel textarea{width:100%;resize:vertical;background:#101217;border:1px solid #343742;border-radius:8px;padding:9px 10px;color:#f0ede8;font:inherit;font-size:10px}.passport-panel textarea:focus{outline:none;border-color:#d7b77e}.passport-glyph-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 10px;padding:9px;background:#12161d;border:1px solid #2d313b;border-radius:8px;font-size:10px}.passport-glyph-head span{color:#d7b77e}
+
+/* Fixed-size quality audit window and local font library */
+.quality-overlay{position:fixed;inset:0;z-index:1200;background:rgba(5,7,10,.78);display:flex;align-items:center;justify-content:center;padding:16px}
+.quality-dialog{width:min(620px,100%);max-height:min(82dvh,720px);display:flex;flex-direction:column;overflow:hidden;background:#171a20;border:1px solid #454957;border-radius:14px;box-shadow:0 24px 80px #0009}
+.quality-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #303541;flex:none}
+.quality-dialog-head small{font-size:9px;letter-spacing:.14em;color:#a9aeba}
+.quality-dialog-head h2{margin:5px 0 0;font-size:16px}
+.quality-dialog-body{padding:14px 16px;overflow-y:auto;overscroll-behavior:contain;min-height:0;font-size:11px}
+.quality-dialog-body>small{display:block;margin-top:12px;color:#a5a9b2;line-height:1.5}
+.quality-dialog-foot{padding:10px 16px;border-top:1px solid #303541;display:flex;justify-content:flex-end;flex:none}
+.library-panel{padding:15px}
+.library-panel h2{font-size:14px;margin:7px 0 0;text-transform:uppercase;letter-spacing:.05em}
+.library-list{margin-top:14px;padding-top:10px;border-top:1px solid #303541}
+.library-list>strong{display:block;font-size:10px;color:#e8dfce;margin-bottom:7px}
+.library-item{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px solid #272b34}
+.library-item-name{flex:1;min-width:0;text-align:left;border:0;background:transparent;color:#e9e5dd;cursor:pointer;font-size:10px;overflow-wrap:anywhere}
+.library-item-name small{display:block;margin-top:3px;color:#9096a2;font-size:8px}
+.library-item .button{padding:5px 9px}
+.library-empty{display:block;padding:7px 0;color:#858b97;font-size:9px}
+.worksheet-file-list{display:flex;flex-direction:column;gap:4px;margin:8px 0;padding:8px;border:1px solid #343742;border-radius:8px;background:#11141a}
+.worksheet-file-list>strong{font-size:9px;color:#d7c59e;margin-bottom:3px}
+.worksheet-file-list button{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px;border:1px solid transparent;border-radius:6px;background:#1b1f27;color:#d6d8df;text-align:left;font-size:9px;cursor:pointer}
+.worksheet-file-list button.selected{border-color:#d7b77e;background:#29251e}
+.worksheet-file-list button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.worksheet-file-list button small{flex:none;color:#9298a4}
+.import-button{display:block;text-align:center;position:relative;overflow:hidden;cursor:pointer}
+.import-button input[type=file]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+@media(max-width:720px){.quality-overlay{padding:8px}.quality-dialog{max-height:86dvh}.quality-dialog-head,.quality-dialog-body{padding:12px}.library-panel{padding:13px}}
