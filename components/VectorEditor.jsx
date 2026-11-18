@@ -1649,6 +1649,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       ? { x: Math.round(rawEnd.x / 100) * 100, y: Math.round(rawEnd.y / 100) * 100 }
       : rawEnd;
     const g = gestureRef.current;
+    if (g?.type === 'restore') updateRestorePreview(g, endPoint);
     if (g && typeof g.upd === 'function') g.upd(endPoint, e);
     if (brushRef.current) {
       const pts = brushRef.current;
