@@ -4,7 +4,7 @@ import WorksheetImport from './components/WorksheetImport.jsx';
 import FontPassport from './components/FontPassport.jsx';
 import ProjectLibrary from './components/ProjectLibrary.jsx';
 import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
-import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph } from './lib/project.js';
+import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, updateProjectMetadata } from './lib/project.js';
 import { validateProject } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
 import { openWorksheetPrint } from './lib/worksheet.js';
@@ -155,7 +155,7 @@ export default function App() {
     setProject(previous => ({ ...previous, glyphs: { ...previous.glyphs, [activeCode]: { ...glyph, strokes: [], outlines: [] } } }));
     setMessage('Символ очищен (штрихи и скан-контуры).');
   };
-  const updateMetadata = (key, value) => setProject(previous => ({ ...previous, metadata: { ...(previous.metadata || {}), [key]: value } }));
+  const updateMetadata = (key, value) => setProject(previous => updateProjectMetadata(previous, key, value));
   const copyText = async value => {
     try {
       if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
