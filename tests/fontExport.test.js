@@ -7,6 +7,7 @@ import { createZip } from '../lib/publishing.js';
 import { SHEET_PAGES } from '../lib/worksheet.js';
 import { STORAGE_KEY, defaultProject, loadProject, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
+import { normalizeImportedProject } from '../lib/projectImport.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -197,4 +198,58 @@ test('font metadata resolver supplies stable defaults for missing or malformed m
     familyName: 'HandFont', author: '', description: '',
     license: 'SIL Open Font License 1.1', version: '1.000'
   });
+});
+
+
+test('JSON project import accepts a valid empty project and fills safe defaults', () => {
+  const imported = normalizeImportedProject({
+    familyName: '  My Font  ',
+    metadata: { author: 'Author' },
+    glyphs: { 65: { unicode: 65, advanceWidth: 620, strokes: [], outlines: [] } }
+  });
+  assert.equal(imported.familyName, 'My Font');
+  assert.equal(imported.metadata.license, 'SIL Open Font License 1.1');
+  assert.equal(imported.glyphs[65].unicode, 65);
+  assert.ok(imported.glyphs[66]);
+});
+
+test('JSON project import rejects malformed nested stroke and contour data', () => {
+  const base = { familyName: 'Damaged', glyphs: { 65: { strokes: [], outlines: [] } } };
+  assert.throws(() => normalizeImportedProject({
+    ...base, glyphs: { 65: { strokes: [null], outlines: [] } }
+  }), /Штрих .* повреждён/);
+  assert.throws(() => normalizeImportedProject({
+    ...base, glyphs: { 65: { strokes: [{ points: [{ x: 1, y: '2' }] }], outlines: [] } }
+  }), /повреждённые или слишком большие координаты/);
+  assert.throws(() => normalizeImportedProject({
+    ...base, glyphs: { 65: { strokes: [], outlines: [[{ x: 0, y: 0 }, { x: 1, y: 1 }]] } }
+  }), /минимум три точки/);
+});
+
+test('JSON project import rejects invalid Unicode keys, excessive coordinates and mismatched glyph codes', () => {
+  const base = { familyName: 'Damaged', glyphs: {} };
+  assert.throws(() => normalizeImportedProject({ ...base, glyphs: { 55296: { strokes: [], outlines: [] } } }), /Unicode-код/);
+  assert.throws(() => normalizeImportedProject({
+    ...base, glyphs: { 65: { strokes: [{ points: [{ x: 10001, y: 0 }] }], outlines: [] } }
+  }), /слишком большие координаты/);
+  assert.throws(() => normalizeImportedProject({
+    ...base, glyphs: { 65: { unicode: 66, strokes: [], outlines: [] } }
+  }), /не совпадает/);
+});
+
+test('JSON project import rejects corrupted metadata, passport and glyph catalog fields', () => {
+  const base = { familyName: 'Valid', glyphs: { 65: { strokes: [], outlines: [] } } };
+  assert.throws(() => normalizeImportedProject({ ...base, metadata: { author: { name: 'x' } } }), /метаданные/);
+  assert.throws(() => normalizeImportedProject({ ...base, passport: 'broken' }), /паспорт шрифта/);
+  assert.throws(() => normalizeImportedProject({ ...base, glyphInfo: { 65: { description: 12 } } }), /знак 65/);
+  assert.throws(() => normalizeImportedProject({ ...base, familyName: '   ' }), /Название семейства/);
+});
+
+test('JSON project import rejects dangerous property names and oversized project geometry', () => {
+  const glyphs = JSON.parse('{"65":{"strokes":[],"outlines":[],"__proto__":{"polluted":true}}}');
+  assert.throws(() => normalizeImportedProject({ familyName: 'Unsafe', glyphs }), /недопустимое поле/);
+  const points = Array.from({ length: 20001 }, (_, index) => ({ x: index % 100, y: index % 100 }));
+  assert.throws(() => normalizeImportedProject({
+    familyName: 'Huge', glyphs: { 65: { strokes: [{ points }], outlines: [] } }
+  }), /Слишком много точек/);
 });
