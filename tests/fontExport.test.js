@@ -317,3 +317,20 @@ test('local project loader recovers when JSON parses but glyph geometry is struc
   assert.equal(values.get(RECOVERY_STORAGE_KEY), JSON.stringify(damaged));
   delete globalThis.localStorage;
 });
+
+
+test('autosave does not overwrite a valid recovery snapshot with a damaged primary file', () => {
+  const safe = { ...defaultProject(), familyName: 'Last known good' };
+  const values = new Map([
+    [STORAGE_KEY, JSON.stringify({ ...defaultProject(), familyName: 'Broken', glyphs: { 65: { strokes: [{ points: [{ x: 1, y: 'bad' }] }], outlines: [] } } })],
+    [BACKUP_STORAGE_KEY, JSON.stringify(safe)]
+  ]);
+  globalThis.localStorage = {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value))
+  };
+  saveProjectSnapshot({ ...defaultProject(), familyName: 'Recovered and edited' });
+  assert.equal(JSON.parse(values.get(BACKUP_STORAGE_KEY)).familyName, 'Last known good');
+  assert.equal(JSON.parse(values.get(STORAGE_KEY)).familyName, 'Recovered and edited');
+  delete globalThis.localStorage;
+});
