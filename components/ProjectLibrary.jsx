@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { buildFont, safeFilename } from '../lib/font.js';
+import { openWorksheetPrint } from '../lib/worksheet.js';
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
   removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject
@@ -23,6 +24,12 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
     setAssets(nextAssets.sort((a, b) => b.updatedAt - a.updatedAt));
   };
   useEffect(() => { refresh().catch(error => setNote(error.message)); }, []);
+  const openBlankWorksheet = () => {
+    try {
+      openWorksheetPrint();
+      setNote('Открыт пустой семистраничный бланк. В окне печати выберите «Сохранить как PDF» или отправьте на принтер. Заполненные листы загрузите в разделе «Бланк и скан» для распознавания.');
+    } catch (error) { setNote(error.message || 'Не удалось открыть бланк.'); }
+  };
   const saveProject = async () => {
     try { setBusy(true); const item = await saveLibraryProject(project); await refresh(); setNote(`Проект «${item.name}» добавлен в библиотеку.`); }
     catch (error) { setNote(error.message); } finally { setBusy(false); }
@@ -81,6 +88,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   return <section className="panel library-panel">
     <div className="section-heading"><div><small>АРХИВ СТУДИИ</small><h2>Библиотека проектов и шрифтов</h2></div><span className="worksheet-icon">▤</span></div>
     <p className="worksheet-copy">Храните готовые проекты, созданные и загруженные шрифты, а также исходные PDF-бланки и сканы. Библиотека находится на этом устройстве; делайте резервную копию для переноса.</p>
+    <div className="library-list"><strong>Пустой бланк для рукописного шрифта · 7 страниц</strong><p className="worksheet-copy">Скачайте бланк в PDF через окно печати или распечатайте его. Заполните от руки, затем загрузите один PDF или до 7 фотографий в блок «Бланк и скан» ниже для извлечения знаков.</p><button className="button full" type="button" onClick={openBlankWorksheet}>⇩ Скачать PDF / печать всех 7 листов</button></div>
     <button className="button full primary" disabled={busy} onClick={saveProject}>＋ Сохранить текущий проект в библиотеку</button>
     <button className="button full" disabled={busy} onClick={saveGeneratedFont}>＋ Создать TTF и добавить в библиотеку</button>
     <label className="button full import-button">Добавить файлы в библиотеку (шрифты и бланки)<input type="file" accept=".ttf,.otf,.woff,.woff2,.pdf,.png,.jpg,.jpeg,.webp,font/ttf,font/otf,font/woff,application/pdf,image/png,image/jpeg,image/webp" multiple onChange={uploadAssets}/></label>
