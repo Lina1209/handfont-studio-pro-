@@ -39,7 +39,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
       onImport(scan);
       setScanResult(scan);
       const skipped = Array.isArray(scan.skipped) ? scan.skipped : [];
-      const alignment = scan.aligned ? 'Угловые метки найдены.' : 'Внимание: лист обработан без угловых меток, точность может быть ниже.';
+      const alignment = scan.alignmentMode === 'four-mark' ? 'Лист выровнен по четырём меткам.' : scan.alignmentMode === 'three-mark-affine' ? 'Найдены 3 из 4 меток: применено резервное выравнивание. Проверьте символы, особенно у краёв листа.' : 'Выравнивание не подтверждено.';
       setNote(`Импортировано символов: ${glyphs.length}. ${alignment}${skipped.length ? ` Пропущены пустые/нечёткие ячейки: ${skipped.join(' ')}.` : ''} Проверьте каждый знак в библиотеке.`);
     } catch (error) { setNote(error.message || 'Не удалось обработать изображение.'); }
     finally { setBusy(false); }
@@ -68,6 +68,6 @@ export default function WorksheetImport({ onImport, onPrint }) {
     <button className="button full primary" type="button" disabled={busy || !file} onClick={importPage}>{busy ? 'Обработка…' : '⇧ Распознать страницу'}</button>
     {scanResult?.glyphs?.length > 0 && <button className="button full" type="button" onClick={downloadRecognizedFont}>↓ Скачать распознанные символы как TTF</button>}
     {note && <p className="worksheet-note" role="status">{note}</p>}
-    <small className="worksheet-warning">PDF автоматически преобразуется в изображение выбранной страницы. Для фото нужны все четыре чёрные угловые метки; перспектива, тени, обрезанные края и сильные линии могут ухудшить распознавание. Импортированные пиксельные контуры требуют ручной проверки и очистки. Экспорт не гарантирует соответствие требованиям Google Fonts.</small>
+    <small className="worksheet-warning">PDF автоматически преобразуется в изображение выбранной страницы. Для точного выравнивания желательно сохранить все четыре метки. Если одна потеряна, применяется резервное выравнивание по трём меткам; при сильной перспективе обязательно проверьте каждый символ. Импортированные пиксельные контуры требуют ручной проверки и очистки. Экспорт не гарантирует соответствие требованиям Google Fonts.</small>
   </section>;
 }
