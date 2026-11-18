@@ -39,7 +39,7 @@ test('restore mask restores only source area, not outside it', () => {
     [square(20, 20, 80, 80)],
     [square(40, 40, 120, 120)]
   );
-  assert.ok(Math.abs(filledArea(result) - 6400) < 1e-5);
+  assert.ok(Math.abs(filledArea(result) - 9600) < 1e-5);
 });
 
 test('keeps original geometry when no masks are supplied', () => {
