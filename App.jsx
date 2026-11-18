@@ -85,8 +85,13 @@ export default function App() {
         { name: 'README.txt', data: `Font family: ${project.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF (install on Windows/macOS/Linux), WOFF (web standard)\nLicense: ${declaredLicense}\n` }
       ];
       const files = await buildDistributionFiles(project, buildFont, styles, extras);
+      const hasWoff = files.some(file => file.name.endsWith('.woff'));
+      const readme = files.find(file => file.name === 'README.txt');
+      if (readme) {
+        readme.data = `Font family: ${project.familyName}\nAuthor: ${project.passport?.author || project.metadata?.author || '(not specified)'}\nVersion: ${project.metadata?.version || '1.000'}\nFormats: TTF${hasWoff ? ' + WOFF' : ''} Regular\nLicense: ${declaredLicense}\n`;
+      }
       downloadBlob(new Blob([createZip(files)], { type: 'application/zip' }), `${safeFilename(project.familyName)}-distribution.zip`);
-      setMessage('ZIP собран: TTF + WOFF Regular, лицензия, исходник, образец и метаданные.');
+      setMessage(`ZIP собран: TTF${hasWoff ? ' + WOFF' : ''} Regular, лицензия, исходник, образец и метаданные.`);
     } catch (error) { setMessage(`Не удалось собрать пакет: ${error.message}`); }
   };
   const importSheetGlyphs = payload => {
