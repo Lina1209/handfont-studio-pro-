@@ -6,7 +6,7 @@ import ProjectLibrary from './components/ProjectLibrary.jsx';
 import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
 import { resolveFontMetadata } from './lib/metadata.js';
 import { readProjectJsonFile } from './lib/projectImport.js';
-import { CHARSET_GROUPS, PALETTE_COLORS, STORAGE_KEY, RECOVERY_STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, saveProjectSnapshot, updateProjectMetadata } from './lib/project.js';
+import { CHARSET_GROUPS, PALETTE_COLORS, RECOVERY_STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, saveProjectSnapshot, updateProjectMetadata } from './lib/project.js';
 import { validateProject } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
 import { openWorksheetPrint } from './lib/worksheet.js';
