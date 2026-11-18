@@ -42,7 +42,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
       setBusy(true);
       for (const file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
-        if (!['ttf', 'otf', 'woff', 'woff2'].includes(ext)) throw new Error(`Формат ${file.name} не поддерживается. Выберите TTF, OTF, WOFF или WOFF2.`);
+        if (!['ttf', 'otf', 'woff', 'woff2', 'pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext)) throw new Error(`Формат ${file.name} не поддерживается. Выберите шрифт TTF/OTF/WOFF/WOFF2 или бланк PDF/PNG/JPG/WebP.`);
         await saveLibraryAsset({ name: file.name, type: file.type || 'font/' + ext, blob: file, source: 'uploaded' });
       }
       await refresh(); setNote(`Добавлено файлов шрифтов: ${files.length}.`);
@@ -79,14 +79,14 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   };
   return <section className="panel library-panel">
     <div className="section-heading"><div><small>АРХИВ СТУДИИ</small><h2>Библиотека проектов и шрифтов</h2></div><span className="worksheet-icon">▤</span></div>
-    <p className="worksheet-copy">Храните здесь готовые проекты, созданные TTF и загруженные файлы шрифтов. Библиотека находится на этом устройстве; делайте резервную копию для переноса.</p>
+    <p className="worksheet-copy">Храните готовые проекты, созданные и загруженные шрифты, а также исходные PDF-бланки и сканы. Библиотека находится на этом устройстве; делайте резервную копию для переноса.</p>
     <button className="button full primary" disabled={busy} onClick={saveProject}>＋ Сохранить текущий проект в библиотеку</button>
     <button className="button full" disabled={busy} onClick={saveGeneratedFont}>＋ Создать TTF и добавить в библиотеку</button>
-    <label className="button full import-button">Загрузить шрифты (TTF / OTF / WOFF)<input type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff" multiple onChange={uploadAssets}/></label>
+    <label className="button full import-button">Добавить файлы в библиотеку (шрифты и бланки)<input type="file" accept=".ttf,.otf,.woff,.woff2,.pdf,.png,.jpg,.jpeg,.webp,font/ttf,font/otf,font/woff,application/pdf,image/png,image/jpeg,image/webp" multiple onChange={uploadAssets}/></label>
     <div className="library-list"><strong>Проекты ({projects.length})</strong>
       {projects.length ? projects.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => loadProject(item)}>{item.name}<small>{new Date(item.updatedAt).toLocaleString()}</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить «${item.name}» из библиотеки?`)) { await removeLibraryProject(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет сохранённых проектов.</small>}
     </div>
-    <div className="library-list"><strong>Файлы шрифтов ({assets.length})</strong>
+    <div className="library-list"><strong>Файлы и бланки ({assets.length})</strong>
       {assets.length ? assets.map(item => <div className="library-item" key={item.id}><button className="library-item-name" onClick={() => downloadAsset(item)}>{item.name}<small>{item.source === 'generated' ? 'Создан в студии' : 'Загружен'} · {Math.max(1, Math.round(item.size / 1024))} КБ</small></button><button className="button danger" onClick={async () => { if (window.confirm(`Удалить файл «${item.name}»?`)) { await removeLibraryAsset(item.id); await refresh(); } }}>×</button></div>) : <small className="library-empty">Пока нет файлов шрифтов.</small>}
     </div>
     <button className="button full" disabled={busy} onClick={exportBackup}>⇩ Создать полную резервную копию</button>
