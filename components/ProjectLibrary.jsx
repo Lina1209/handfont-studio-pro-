@@ -71,6 +71,7 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   const importBackup = async event => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
+      if (file.size > 150 * 1024 * 1024) throw new Error('Файл резервной копии слишком большой: максимум 150 МБ.');
       setBusy(true);
       const backup = JSON.parse(await file.text());
       const current = await importLibraryBackup(backup);
