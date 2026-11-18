@@ -425,3 +425,22 @@ test('library backup rejects invalid asset metadata and corrupted checksums befo
   };
   await assert.rejects(() => importLibraryBackup(invalidChecksum), /Контрольная сумма.*не совпадает/);
 });
+
+
+test('single-project backup round-trips a normalized project without library assets', async () => {
+  const { createProjectBackup, parseProjectBackup } = await import('../lib/projectBackup.js');
+  const source = { id: 'project-17', name: 'My archive font', project: sampleProject() };
+  const parsed = parseProjectBackup(createProjectBackup(source));
+  assert.equal(parsed.name, source.name);
+  assert.equal(parsed.project.familyName, source.project.familyName);
+  assert.equal(parsed.project.glyphs[65].advanceWidth, 620);
+});
+
+test('single-project restore rejects wrong format and damaged project data', async () => {
+  const { parseProjectBackup } = await import('../lib/projectBackup.js');
+  assert.throws(() => parseProjectBackup({ format: 'handfont-studio-library-backup', version: 1 }), /не является корректной/);
+  assert.throws(() => parseProjectBackup({
+    format: 'handfont-studio-project-backup', version: 1,
+    name: 'Damaged', project: { familyName: 'Bad', glyphs: { 65: { strokes: [null], outlines: [] } } }
+  }), /Штрих .* повреждён/);
+});
