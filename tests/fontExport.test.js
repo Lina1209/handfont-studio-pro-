@@ -9,6 +9,7 @@ import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, 
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
 import { validateFontAsset } from '../lib/fontFile.js';
+import { crc32 } from '../lib/checksum.js';
 
 
 const opentype = opentypeModule.default ?? opentypeModule;
@@ -361,4 +362,14 @@ test('font library upload rejects a mismatched or truncated font file', async ()
 test('non-font library assets bypass font signature validation', async () => {
   const pdf = new Blob(['%PDF']); pdf.name = 'worksheet.pdf';
   assert.equal(await validateFontAsset(pdf), null);
+});
+
+
+test('backup asset checksum detects accidental changes in binary data', () => {
+  const original = new Uint8Array([0, 1, 2, 255, 10, 13]);
+  const restored = new Uint8Array([0, 1, 2, 255, 10, 13]);
+  const damaged = new Uint8Array([0, 1, 2, 254, 10, 13]);
+  assert.equal(crc32(original), crc32(restored));
+  assert.notEqual(crc32(original), crc32(damaged));
+  assert.equal(crc32(new TextEncoder().encode('123456789')), 'cbf43926');
 });
