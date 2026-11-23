@@ -1733,6 +1733,25 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     pen.freehand=[];pen.dragging=false;pen.dragNode=null;
     rerender();
   };
+  // Отмена указателя не должна фиксировать незавершённую операцию.
+  // Ластик меняет объекты прямо во время жеста, поэтому возвращаем снимок.
+  const onPointerCancel = e => {
+    const gesture = gestureRef.current;
+    if (gesture?.type === 'pan' && gesture.v0) setView(gesture.v0);
+    else if (gesture?.snap) setObjects(clone(gesture.snap));
+    gestureRef.current = null;
+    activePointerId.current = null;
+    pointersRef.current.clear();
+    brushRef.current = null;
+    eraserPosRef.current = null;
+    // Незавершённый контур пера не должен случайно завершиться следующим жестом.
+    penRef.current.nodes = [];
+    penRef.current.freehand = [];
+    penRef.current.dragging = false;
+    penRef.current.dragNode = null;
+    rerender();
+  };
+
   const onWheel = e => {
     e.preventDefault();
     const p = posFromEvent(e);
@@ -2478,7 +2497,7 @@ const roundSelectedCorner = () => {
           if (/svg/.test(f.type) || /\.svg$/i.test(f.name)) loadSvgFile(f);
           else if (/^image\//.test(f.type)) loadPngFile(f);
         }}>
-          <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onWheel={onWheel} onContextMenu={e => e.preventDefault()} style={{ touchAction: 'none' }}/>
+          <canvas ref={canvasRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onWheel={onWheel} onContextMenu={e => e.preventDefault()} style={{ touchAction: 'none' }}/>
         </div>
       </div>
       <div className="ve-status">{message}</div>
