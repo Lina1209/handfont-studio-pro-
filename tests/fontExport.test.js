@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES } from '../lib/worksheet.js';
+import { SHEET_PAGES, createProjectiveMapper } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -443,4 +443,38 @@ test('single-project restore rejects wrong format and damaged project data', asy
     format: 'handfont-studio-project-backup', version: 1,
     name: 'Damaged', project: { familyName: 'Bad', glyphs: { 65: { strokes: [null], outlines: [] } } }
   }), /Штрих .* повреждён/);
+});
+
+
+test('projective worksheet alignment maps all four registration marks and interior points', () => {
+  const source = [
+    { x: 0, y: 0 }, { x: 100, y: 0 },
+    { x: 100, y: 100 }, { x: 0, y: 100 }
+  ];
+  const h = [1.2, 0.1, 30, -0.05, 1.1, 20, 0.0008, -0.0004];
+  const project = ({ x, y }) => ({
+    x: (h[0] * x + h[1] * y + h[2]) / (h[6] * x + h[7] * y + 1),
+    y: (h[3] * x + h[4] * y + h[5]) / (h[6] * x + h[7] * y + 1)
+  });
+  const target = source.map(project);
+  const mapper = createProjectiveMapper(source, target);
+  assert.equal(typeof mapper, 'function');
+  for (let i = 0; i < source.length; i++) {
+    const actual = mapper(source[i].x, source[i].y);
+    assert.ok(Math.abs(actual.x - target[i].x) < 1e-7);
+    assert.ok(Math.abs(actual.y - target[i].y) < 1e-7);
+  }
+  const actual = mapper(37, 61), expected = project({ x: 37, y: 61 });
+  assert.ok(Math.abs(actual.x - expected.x) < 1e-7);
+  assert.ok(Math.abs(actual.y - expected.y) < 1e-7);
+});
+
+test('projective worksheet alignment rejects degenerate or malformed registration marks', () => {
+  const collinear = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }];
+  assert.equal(createProjectiveMapper(collinear, collinear), null);
+  assert.equal(createProjectiveMapper([{ x: 0, y: 0 }], [{ x: 0, y: 0 }]), null);
+  assert.equal(createProjectiveMapper(
+    [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    [{ x: 0, y: 0 }, { x: Infinity, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
+  ), null);
 });
