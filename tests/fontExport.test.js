@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES } from '../lib/worksheet.js';
+import { SHEET_PAGES, validateWorksheetFile, MAX_WORKSHEET_FILE_BYTES } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -443,4 +443,16 @@ test('single-project restore rejects wrong format and damaged project data', asy
     format: 'handfont-studio-project-backup', version: 1,
     name: 'Damaged', project: { familyName: 'Bad', glyphs: { 65: { strokes: [null], outlines: [] } } }
   }), /Штрих .* повреждён/);
+});
+
+
+test('worksheet upload validation accepts supported image and PDF inputs', () => {
+  assert.equal(validateWorksheetFile({ name: 'page.png', type: 'image/png', size: 1024 }), true);
+  assert.equal(validateWorksheetFile({ name: 'pages.pdf', type: 'application/pdf', size: 2048 }), true);
+});
+
+test('worksheet upload validation rejects oversized and unsupported files before decoding', () => {
+  assert.throws(() => validateWorksheetFile({ name: 'large.pdf', type: 'application/pdf', size: MAX_WORKSHEET_FILE_BYTES + 1 }), /максимум 25 МБ/);
+  assert.throws(() => validateWorksheetFile({ name: 'notes.txt', type: 'text/plain', size: 100 }), /Выберите PDF-бланк/);
+  assert.throws(() => validateWorksheetFile(null), /Выберите PDF-бланк/);
 });
