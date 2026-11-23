@@ -74,7 +74,11 @@ test('buildFont preserves advance width, space width and computed side bearings'
     strokes: [],
     outlines: [[{ x: 40, y: 0 }, { x: 300, y: 700 }, { x: 560, y: 0 }]]
   };
-  const parsed = opentype.parse(buildFont(project).toArrayBuffer());
+  const sourceFont = buildFont(project);
+  const sourceLetter = sourceFont.charToGlyph('A');
+  assert.equal(sourceLetter.path.getBoundingBox().x1, 40);
+  assert.equal(sourceLetter.leftSideBearing, 40);
+  const parsed = opentype.parse(sourceFont.toArrayBuffer());
   const letter = parsed.charToGlyph('A');
   const space = parsed.charToGlyph(' ');
   const metrics = letter.getMetrics();
