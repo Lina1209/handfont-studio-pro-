@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES, createProjectiveMapper } from '../lib/worksheet.js';
+import { SHEET_PAGES, createProjectiveMapper, traceMask } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -477,4 +477,24 @@ test('projective worksheet alignment rejects degenerate or malformed registratio
     [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
     [{ x: 0, y: 0 }, { x: Infinity, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
   ), null);
+});
+
+
+test('worksheet contour tracing preserves a hole as a separate closed contour', () => {
+  const width = 5, height = 5;
+  const mask = new Uint8Array(width * height).fill(1);
+  mask[2 * width + 2] = 0;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 2);
+  assert.ok(loops.every(loop => loop.length >= 4));
+});
+
+test('worksheet contour tracing keeps detached pen marks as separate contours', () => {
+  const width = 7, height = 7;
+  const mask = new Uint8Array(width * height);
+  for (let y = 1; y <= 2; y++) for (let x = 1; x <= 2; x++) mask[y * width + x] = 1;
+  for (let y = 4; y <= 5; y++) for (let x = 4; x <= 5; x++) mask[y * width + x] = 1;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 2);
+  assert.ok(loops.every(loop => loop.length >= 4));
 });
