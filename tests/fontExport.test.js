@@ -473,6 +473,9 @@ test('projective worksheet alignment rejects degenerate or malformed registratio
   const collinear = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }];
   assert.equal(createProjectiveMapper(collinear, collinear), null);
   assert.equal(createProjectiveMapper([{ x: 0, y: 0 }], [{ x: 0, y: 0 }]), null);
+  const square = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+  const crossed = [{ x: 0, y: 0 }, { x: 10, y: 10 }, { x: 10, y: 0 }, { x: 0, y: 10 }];
+  assert.equal(createProjectiveMapper(square, crossed), null);
   assert.equal(createProjectiveMapper(
     [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
     [{ x: 0, y: 0 }, { x: Infinity, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
