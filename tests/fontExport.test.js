@@ -5,7 +5,7 @@ import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
 import { SHEET_PAGES } from '../lib/worksheet.js';
-import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
+import { BACKUP_STORAGE_KEY, METRICS, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
 import { validateFontAsset } from '../lib/fontFile.js';
@@ -48,6 +48,44 @@ test('buildFont writes a readable TTF with author, version and license metadata'
   assert.ok(values('version').includes('Version 1.002'));
   assert.ok(values('license').some(value => value.includes('SIL Open Font License 1.1')));
   assert.equal(parsed.charToGlyph('A').unicode, 65);
+});
+
+test('buildFont preserves editor vertical metrics in the exported OS/2 table', () => {
+  const project = defaultProject();
+  project.familyName = 'Metric QA';
+  project.glyphs[65] = {
+    advanceWidth: 620,
+    strokes: [],
+    outlines: [[{ x: 40, y: 0 }, { x: 300, y: 700 }, { x: 560, y: 0 }]]
+  };
+  const parsed = opentype.parse(buildFont(project).toArrayBuffer());
+  assert.equal(parsed.ascender, METRICS.ascender);
+  assert.equal(parsed.descender, METRICS.descender);
+  assert.equal(parsed.tables.os2.sCapHeight, METRICS.capHeight);
+  assert.equal(parsed.tables.os2.sxHeight, METRICS.xHeight);
+  assert.equal(parsed.tables.os2.sTypoAscender, METRICS.ascender);
+  assert.equal(parsed.tables.os2.sTypoDescender, METRICS.descender);
+});
+
+test('buildFont preserves advance width, space width and computed side bearings', () => {
+  const project = defaultProject();
+  project.glyphs[65] = {
+    advanceWidth: 620,
+    strokes: [],
+    outlines: [[{ x: 40, y: 0 }, { x: 300, y: 700 }, { x: 560, y: 0 }]]
+  };
+  const sourceFont = buildFont(project);
+  const sourceLetter = sourceFont.charToGlyph('A');
+  assert.equal(sourceLetter.path.getBoundingBox().x1, 40);
+  assert.equal(sourceLetter.leftSideBearing, 40);
+  const parsed = opentype.parse(sourceFont.toArrayBuffer());
+  const letter = parsed.charToGlyph('A');
+  const space = parsed.charToGlyph(' ');
+  const metrics = letter.getMetrics();
+  assert.equal(letter.advanceWidth, 620);
+  assert.equal(metrics.leftSideBearing, 40);
+  assert.equal(metrics.rightSideBearing, 60);
+  assert.equal(space.advanceWidth, 280);
 });
 
 test('buildFont preserves separate outer, hole and detached contours in one glyph', () => {
