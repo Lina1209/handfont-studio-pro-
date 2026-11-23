@@ -3,6 +3,7 @@ import * as opentypeModule from 'opentype.js';
 import { METRICS } from '../lib/project.js';
 import { strokeToContours } from '../lib/geometry.js';
 import { buildBrushMask, buildRestorePatch, constrainRestorePatch } from '../lib/restoreGeometry.js';
+import { getPointerCancelRecovery } from '../lib/pointerGesture.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -1736,9 +1737,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   // Отмена указателя не должна фиксировать незавершённую операцию.
   // Ластик меняет объекты прямо во время жеста, поэтому возвращаем снимок.
   const onPointerCancel = e => {
-    const gesture = gestureRef.current;
-    if (gesture?.type === 'pan' && gesture.v0) setView(gesture.v0);
-    else if (gesture?.snap) setObjects(clone(gesture.snap));
+    const recovery = getPointerCancelRecovery(gestureRef.current);
+    if (recovery.view) setView(recovery.view);
+    if (recovery.objects) setObjects(clone(recovery.objects));
     gestureRef.current = null;
     activePointerId.current = null;
     pointersRef.current.clear();
