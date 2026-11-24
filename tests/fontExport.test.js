@@ -170,6 +170,34 @@ test('worksheet contour tracer preserves a hole and a detached dot', () => {
   assert.ok(areas[2] > areas[1], 'the outer contour must enclose the inner counter');
 });
 
+test('worksheet contour tracer preserves tiny dots, thin bars and diagonal-touching components', () => {
+  const makeMask = (width, height, pixels) => {
+    const mask = new Uint8Array(width * height);
+    for (const [x, y] of pixels) mask[y * width + x] = 1;
+    return mask;
+  };
+  const dot = traceMask(makeMask(5, 5, [[2, 2]]), 5, 5);
+  assert.equal(dot.length, 1, 'a one-pixel dot must produce one closed contour');
+  assert.ok(dot[0].length >= 4);
+
+  const thinBar = traceMask(makeMask(7, 5, [[2, 2], [3, 2], [4, 2]]), 7, 5);
+  assert.equal(thinBar.length, 1, 'a thin horizontal stroke must remain one contour');
+
+  const diagonal = traceMask(makeMask(4, 4, [[1, 1], [2, 2]]), 4, 4);
+  assert.equal(diagonal.length, 2, 'diagonal-only contact must not merge two distinct outline loops');
+  assert.ok(diagonal.every(loop => loop.length >= 4));
+});
+
+test('worksheet contour tracer preserves a nested island inside a counter', () => {
+  const width = 13, height = 13;
+  const mask = new Uint8Array(width * height);
+  for (let y = 1; y <= 11; y++) for (let x = 1; x <= 11; x++) mask[y * width + x] = 1;
+  for (let y = 3; y <= 9; y++) for (let x = 3; x <= 9; x++) mask[y * width + x] = 0;
+  for (let y = 5; y <= 7; y++) for (let x = 5; x <= 7; x++) mask[y * width + x] = 1;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 3, 'outer contour, counter and nested island must all remain');
+});
+
 test('createZip rejects NUL bytes in entry names', () => {
   const invalidName = `bad${String.fromCharCode(0)}name.txt`;
   assert.throws(() => createZip([{ name: invalidName, data: 'x' }]), /некорректное имя файла/);
