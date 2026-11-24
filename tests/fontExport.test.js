@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES } from '../lib/worksheet.js';
+import { SHEET_PAGES, worksheetCellScanBounds, worksheetGlyphThreshold } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -125,6 +125,22 @@ test('createZip rejects duplicate paths and unsupported input', () => {
   assert.throws(() => createZip(null), /список файлов/);
 });
 
+
+test('worksheet glyph threshold never turns the printed baseline guide into ink', () => {
+  assert.equal(worksheetGlyphThreshold(128, 128), 128);
+  assert.equal(worksheetGlyphThreshold(200, 200), 195);
+  assert.ok(worksheetGlyphThreshold(200, 200) < 199, 'printed blue baseline must remain above the ink threshold');
+  assert.equal(worksheetGlyphThreshold(20, 60), 50);
+});
+
+test('worksheet scan crop excludes the printed hint from every glyph cell', () => {
+  for (let index = 0; index < 24; index++) {
+    const bounds = worksheetCellScanBounds(index);
+    assert.ok(bounds.x1 > bounds.x0);
+    assert.ok(bounds.y1 > bounds.y0);
+    assert.ok(bounds.y1 < bounds.hintTop, 'printed hint must remain outside the sampled glyph area');
+  }
+});
 
 test('worksheet generator contains seven printable pages with no duplicated symbols', () => {
   assert.equal(SHEET_PAGES.length, 7);
