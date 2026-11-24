@@ -469,6 +469,34 @@ test('projective worksheet alignment maps all four registration marks and interi
   assert.ok(Math.abs(actual.y - expected.y) < 1e-7);
 });
 
+test('projective worksheet alignment remains stable at full worksheet pixel coordinates', () => {
+  const source = [
+    { x: 48, y: 42 }, { x: 952, y: 42 },
+    { x: 952, y: 1372 }, { x: 48, y: 1372 }
+  ];
+  const transform = (x, y) => {
+    const denominator = 0.00011 * x - 0.00007 * y + 1;
+    return {
+      x: (1.08 * x + 0.035 * y + 85) / denominator,
+      y: (-0.025 * x + 1.04 * y + 62) / denominator
+    };
+  };
+  const target = source.map(point => transform(point.x, point.y));
+  const mapper = createProjectiveMapper(source, target);
+  assert.equal(typeof mapper, 'function');
+  for (const point of [
+    ...source,
+    { x: 500, y: 700 },
+    { x: 230, y: 1120 },
+    { x: 810, y: 360 }
+  ]) {
+    const expected = transform(point.x, point.y);
+    const actual = mapper(point.x, point.y);
+    assert.ok(Math.abs(actual.x - expected.x) < 1e-5);
+    assert.ok(Math.abs(actual.y - expected.y) < 1e-5);
+  }
+});
+
 test('projective worksheet alignment rejects degenerate or malformed registration marks', () => {
   const collinear = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }];
   assert.equal(createProjectiveMapper(collinear, collinear), null);
