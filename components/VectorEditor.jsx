@@ -3,6 +3,7 @@ import * as opentypeModule from 'opentype.js';
 import { METRICS } from '../lib/project.js';
 import { strokeToContours } from '../lib/geometry.js';
 import { buildBrushMask, buildRestorePatch, constrainRestorePatch } from '../lib/restoreGeometry.js';
+import { fitCanvasView, screenToWorld } from '../lib/canvasView.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
@@ -721,9 +722,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   const posFromEvent = e => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    const v = stateRef.current.view;
-    const scale = rect.height / (v.yMax - v.yMin);
-    return { x: (e.clientX - rect.left) / scale + v.xMin, y: v.yMax - (e.clientY - rect.top) / scale };
+    return screenToWorld(e.clientX, e.clientY, rect, stateRef.current.view);
   };
 
   /* ===== Отрисовка ===== */
@@ -739,8 +738,9 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
       const ctx = canvas.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       const v = stateRef.current.view;
-      const scale = rect.height / (v.yMax - v.yMin);
-      const X = x => (x - v.xMin) * scale, Y = y => (v.yMax - y) * scale;
+      const { scale, offsetX, offsetY } = fitCanvasView(rect, v);
+      const X = x => offsetX + (x - v.xMin) * scale;
+      const Y = y => offsetY + (v.yMax - y) * scale;
       ctx.fillStyle = '#111318'; ctx.fillRect(0, 0, rect.width, rect.height);
       ctx.fillStyle = '#171a21';
       ctx.fillRect(X(0), Y(METRICS.ascender), 900 * scale, (METRICS.ascender - METRICS.descender) * scale);
@@ -939,7 +939,7 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
   }
   const screenK = () => {
     const rect = canvasRef.current.getBoundingClientRect();
-    return (stateRef.current.view.yMax - stateRef.current.view.yMin) / Math.max(1, rect.height);
+    return 1 / fitCanvasView(rect, stateRef.current.view).scale;
   };
   function hitHandle(p, bb, k) {
     for (const [name, hx, hy] of handlePts(bb)) if (Math.abs(p.x - hx) < 9 * k && Math.abs(p.y - hy) < 9 * k) return name;
@@ -1531,9 +1531,10 @@ export default function VectorEditor({ char, glyph, onApply, onClose }) {
     lastTapRef.current = { t: now, x: p.x, y: p.y };
     if (st.tool === 'hand' || spaceRef.current || e.button === 1) {
       const rect = canvasRef.current.getBoundingClientRect();
-      gestureRef.current = { type: 'pan', v0: { ...st.view }, sx: e.clientX, sy: e.clientY, rectH: rect.height,
+      const { scale } = fitCanvasView(rect, st.view);
+      gestureRef.current = { type: 'pan', v0: { ...st.view }, sx: e.clientX, sy: e.clientY, scale,
         upd(pp, ev) {
-          const scale = this.rectH / (this.v0.yMax - this.v0.yMin);
+          const scale = this.scale;
           setView({ ...this.v0, xMin: this.v0.xMin - (ev.clientX - this.sx) / scale, yMin: this.v0.yMin + (ev.clientY - this.sy) / scale, xMax: this.v0.xMax - (ev.clientX - this.sx) / scale, yMax: this.v0.yMax + (ev.clientY - this.sy) / scale });
         } };
       return;

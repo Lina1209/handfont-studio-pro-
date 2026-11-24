@@ -134,6 +134,35 @@ test('worksheet generator contains seven printable pages with no duplicated symb
 });
 
 
+test('vector editor viewport fits the complete glyph frame on narrow and wide screens', async () => {
+  const { fitCanvasView, screenToWorld } = await import('../lib/canvasView.js');
+  const view = { xMin: -60, xMax: 940, yMin: -260, yMax: 840 };
+  for (const rect of [
+    { left: 0, top: 0, width: 320, height: 480 },
+    { left: 0, top: 0, width: 1200, height: 600 }
+  ]) {
+    const transform = fitCanvasView(rect, view);
+    assert.ok(transform.scale > 0);
+    assert.ok(transform.offsetX >= 0 && transform.offsetY >= 0);
+    const topLeft = screenToWorld(
+      rect.left + transform.offsetX,
+      rect.top + transform.offsetY,
+      rect,
+      view
+    );
+    const bottomRight = screenToWorld(
+      rect.left + transform.offsetX + (view.xMax - view.xMin) * transform.scale,
+      rect.top + transform.offsetY + (view.yMax - view.yMin) * transform.scale,
+      rect,
+      view
+    );
+    assert.ok(Math.abs(topLeft.x - view.xMin) < 1e-8);
+    assert.ok(Math.abs(topLeft.y - view.yMax) < 1e-8);
+    assert.ok(Math.abs(bottomRight.x - view.xMax) < 1e-8);
+    assert.ok(Math.abs(bottomRight.y - view.yMin) < 1e-8);
+  }
+});
+
 test('createZip rejects NUL bytes in entry names', () => {
   const invalidName = `bad${String.fromCharCode(0)}name.txt`;
   assert.throws(() => createZip([{ name: invalidName, data: 'x' }]), /некорректное имя файла/);
