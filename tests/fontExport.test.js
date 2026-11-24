@@ -142,7 +142,7 @@ test('worksheet keeps the exact seven-page symbol order and printable cell geome
     [...'GHIJKLMNOPQRSTUVWXYZabcd'],
     [...'efghijklmnopqrstuvwx yz01'.replace(' ', '')],
     [...'23456789.,;:!?—–-()[]«»"'],
-    ['\\\\', "'", '@', '#', '&', '/', '№', '%', '+', '=']
+    ['\\', "'", '@', '#', '&', '/', '№', '%', '+', '=']
   ];
   assert.deepEqual(SHEET_PAGES, expectedPages);
   for (let pageIndex = 0; pageIndex < SHEET_PAGES.length; pageIndex++) {
