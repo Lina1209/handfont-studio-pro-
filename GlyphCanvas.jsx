@@ -81,14 +81,9 @@ export default function GlyphCanvas({ glyph, penWidth, showGuides, onCommit }) {
     onCommit([...(glyph.strokes || []), stroke]);
     setRedraw(n => n + 1);
   };
-  const cancel = () => {
-    if (!activeStroke.current) return;
-    activeStroke.current = null;
-    setRedraw(n => n + 1);
-  };
 
   return <div className="canvas-wrap">
     <canvas ref={canvasRef} onPointerDown={down} onPointerMove={move} onPointerUp={finish}
-      onPointerCancel={cancel} style={{ touchAction: 'none' }} aria-label="Поле рисования символа" />
+      onPointerCancel={finish} style={{ touchAction: 'none' }} aria-label="Поле рисования символа" />
   </div>;
 }
