@@ -119,7 +119,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
     {previewUrl && <img className="worksheet-preview" src={previewUrl} alt="Предпросмотр загруженной страницы"/>}
     <label className="field-label">Чувствительность распознавания: {threshold}
       <input type="range" min="60" max="200" step="1" value={threshold} onChange={event => setThreshold(Number(event.target.value))}/>
-      <small>Оставьте 128 для обычного скана. Если тонкие штрихи пропадают, постепенно повышайте значение; если появляются пятна и фон — снижайте.</small>
+      <small>Оставьте 128 для обычного скана. Если тонкие штрихи пропадают, постепенно повышайте значение; если появляются пятна и фон — снижайте. Ползунок влияет на штрихи внутри ячеек, но не на поиск угловых меток.</small>
     </label>
     <button className="button full primary" type="button" disabled={busy || !files.length} onClick={importAll}>{busy ? 'Обработка…' : files.length > 1 ? '⇧ Распознать все загруженные страницы' : '⇧ Распознать бланк / все страницы PDF'}</button>
     {scanResult?.glyphs?.length > 0 && <button className="button full" type="button" onClick={downloadRecognizedFont}>↓ Скачать распознанные символы как TTF</button>}
