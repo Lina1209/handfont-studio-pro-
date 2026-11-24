@@ -5,7 +5,8 @@ import { validateFontAsset } from '../lib/fontFile.js';
 import { createProjectBackup, parseProjectBackup } from '../lib/projectBackup.js';
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
-  removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject, updateLibraryProject
+  MAX_LIBRARY_ASSET_BYTES, MAX_LIBRARY_UPLOAD_TOTAL_BYTES,
+  removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryAssets, saveLibraryProject, updateLibraryProject
 } from '../lib/library.js';
 
 function downloadBlob(blob, filename) {
@@ -48,6 +49,8 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   const uploadAssets = async event => {
     const files = [...(event.target.files || [])];
     try {
+      if (files.some(file => file.size > MAX_LIBRARY_ASSET_BYTES)) throw new Error('Один из файлов превышает лимит 50 МБ.');
+      if (files.reduce((sum, file) => sum + file.size, 0) > MAX_LIBRARY_UPLOAD_TOTAL_BYTES) throw new Error('Общий объём выбранных файлов превышает лимит 100 МБ за одну загрузку.');
       setBusy(true);
       const prepared = [];
       for (const file of files) {
@@ -57,9 +60,9 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
         const fallbackMime = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext];
         prepared.push({ file, mime: fontMime || file.type || fallbackMime });
       }
-      for (const item of prepared) {
-        await saveLibraryAsset({ name: item.file.name, type: item.mime, blob: item.file, source: 'uploaded' });
-      }
+      await saveLibraryAssets(prepared.map(item => ({
+        name: item.file.name, type: item.mime, blob: item.file, source: 'uploaded'
+      })));
       await refresh(); setNote(`Добавлено файлов: ${files.length}. Оригинальные бинарные данные сохранены без перекодирования.`);
     } catch (error) { setNote(error.message); } finally { setBusy(false); event.target.value = ''; }
   };
