@@ -212,7 +212,7 @@ export default function App() {
     } catch (error) { setMessage(`Не удалось вставить символ: ${error.message}`); }
   };
 
-  const exportFont = style => { try { const report = assertFontExportable(project); if (report.warnings.length && !window.confirm(`Есть предупреждения качества (${report.warnings.length}), включая незаполненные символы. Продолжить экспорт TTF?`)) return; const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); setQualityOpen(true); } };
+  const exportFont = style => { try { const report = assertFontExportable(project); if (report.warnings.length && !window.confirm(`Есть предупреждения качества (${report.warnings.length}), включая незаполненные символы. Продолжить экспорт TTF?`)) return; const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); setQualityOpen(true); } };
   const exportProject = () => downloadBlob(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${safeFilename(project.familyName)}-source.json`);
   const importProject = async event => {
     const file = event.target.files?.[0];
