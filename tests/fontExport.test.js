@@ -15,6 +15,26 @@ import { importLibraryBackup } from '../lib/library.js';
 
 const opentype = opentypeModule.default ?? opentypeModule;
 
+function contourSignedAreas(path) {
+  const contours = [];
+  let current = [];
+  for (const command of path.commands) {
+    if (command.type === 'M') {
+      current = [{ x: command.x, y: command.y }];
+    } else if (command.type === 'L') {
+      current.push({ x: command.x, y: command.y });
+    } else if (command.type === 'Z' && current.length >= 3) {
+      let area = 0;
+      for (let i = 0, j = current.length - 1; i < current.length; j = i++) {
+        area += current[j].x * current[i].y - current[i].x * current[j].y;
+      }
+      contours.push(area / 2);
+      current = [];
+    }
+  }
+  return contours;
+}
+
 function sampleProject() {
   return {
     familyName: 'HandFont QA',
@@ -59,7 +79,9 @@ test('buildFont preserves separate outer, hole and detached contours in one glyp
         strokes: [],
         outlines: [
           [{ x: 40, y: 0 }, { x: 560, y: 0 }, { x: 560, y: 700 }, { x: 40, y: 700 }],
-          [{ x: 180, y: 180 }, { x: 180, y: 520 }, { x: 420, y: 520 }, { x: 420, y: 180 }],
+          // All three inputs intentionally have the same winding. The exporter
+          // must reverse the hole and retain the two outer contours clockwise.
+          [{ x: 180, y: 180 }, { x: 420, y: 180 }, { x: 420, y: 520 }, { x: 180, y: 520 }],
           [{ x: 620, y: 0 }, { x: 700, y: 0 }, { x: 700, y: 80 }, { x: 620, y: 80 }]
         ]
       }
@@ -70,6 +92,7 @@ test('buildFont preserves separate outer, hole and detached contours in one glyp
   assert.equal(glyph.advanceWidth, 735);
   assert.equal(glyph.path.commands.filter(command => command.type === 'M').length, 3);
   assert.equal(glyph.path.commands.filter(command => command.type === 'Z').length, 3);
+  assert.deepEqual(contourSignedAreas(glyph.path).map(Math.sign), [-1, 1, -1]);
   assert.ok(glyph.path.commands.every(command =>
     Object.values(command).every(value => typeof value !== 'number' || Number.isFinite(value))
   ));
