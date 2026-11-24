@@ -6,6 +6,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(0);
   const [page, setPage] = useState(0);
+  const [threshold, setThreshold] = useState(128);
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [note, setNote] = useState('');
@@ -53,7 +54,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
         for (let index = 0; index < files.length; index++) {
           try {
             setNote(`Распознаю файл ${index + 1} из ${files.length}…`);
-            const result = await scanWorksheetFile(files[index], index);
+            const result = await scanWorksheetFile(files[index], index, { threshold });
             collected.push(...(result.glyphs || []));
             skipped.push(...(result.skipped || []));
             if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
@@ -70,7 +71,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
           for (let index = 0; index < total; index++) {
             try {
               setNote(`Распознаю страницу ${index + 1} из ${total}…`);
-              const result = await scanWorksheetFile(file, index);
+              const result = await scanWorksheetFile(file, index, { threshold });
               collected.push(...(result.glyphs || []));
               skipped.push(...(result.skipped || []));
               if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
@@ -78,7 +79,7 @@ export default function WorksheetImport({ onImport, onPrint }) {
             } catch (error) { errors.push(`Страница ${index + 1}: ${error.message}`); }
           }
         } else {
-          const result = await scanWorksheetFile(file, page);
+          const result = await scanWorksheetFile(file, page, { threshold });
           collected.push(...(result.glyphs || []));
           skipped.push(...(result.skipped || []));
           if (result.alignmentMode) alignmentModes.push(result.alignmentMode);
@@ -116,6 +117,10 @@ export default function WorksheetImport({ onImport, onPrint }) {
     {files.length > 0 && <div className="worksheet-file-list"><strong>Загружено: {files.length}/7</strong>{files.map((file, index) => <button type="button" key={`${file.name}-${index}`} className={selectedFile === index ? 'selected' : ''} onClick={() => { setSelectedFile(index); if (files.length > 1) setPage(index); }}><span>{index + 1}. {file.name}</span><small>{Math.max(1, Math.round(file.size / 1024))} КБ</small></button>)}</div>}
     {files.length === 1 && !(activeFile?.type === 'application/pdf' || /\.pdf$/i.test(activeFile?.name || '')) && <label className="field-label">Страница бланка<select value={page} onChange={event => setPage(Number(event.target.value))}>{pageOptions.map(({ index, chars }) => <option value={index} key={index}>Страница {index + 1} — {chars[0]}…{chars.at(-1)}</option>)}</select></label>}
     {previewUrl && <img className="worksheet-preview" src={previewUrl} alt="Предпросмотр загруженной страницы"/>}
+    <label className="field-label">Чувствительность распознавания: {threshold}
+      <input type="range" min="60" max="200" step="1" value={threshold} onChange={event => setThreshold(Number(event.target.value))}/>
+      <small>Оставьте 128 для обычного скана. Если тонкие штрихи пропадают, постепенно повышайте значение; если появляются пятна и фон — снижайте.</small>
+    </label>
     <button className="button full primary" type="button" disabled={busy || !files.length} onClick={importAll}>{busy ? 'Обработка…' : files.length > 1 ? '⇧ Распознать все загруженные страницы' : '⇧ Распознать бланк / все страницы PDF'}</button>
     {scanResult?.glyphs?.length > 0 && <button className="button full" type="button" onClick={downloadRecognizedFont}>↓ Скачать распознанные символы как TTF</button>}
     {note && <p className="worksheet-note" role="status">{note}</p>}
