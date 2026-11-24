@@ -7,7 +7,7 @@ import { buildFont, downloadBlob, safeFilename } from './lib/font.js';
 import { resolveFontMetadata } from './lib/metadata.js';
 import { readProjectJsonFile } from './lib/projectImport.js';
 import { CHARSET_GROUPS, PALETTE_COLORS, RECOVERY_STORAGE_KEY, charOf, defaultProject, loadProject, makeGlyph, saveProjectSnapshot, updateProjectMetadata } from './lib/project.js';
-import { validateProject } from './lib/quality.js';
+import { validateProject, assertFontExportable } from './lib/quality.js';
 import { createZip, fontSpecimenSvg, OFL_LICENSE, openSpecimenPrint } from './lib/publishing.js';
 import { openWorksheetPrint } from './lib/worksheet.js';
 import VectorEditor from './components/VectorEditor.jsx';
@@ -78,6 +78,10 @@ export default function App() {
   }, [activeCode, project.glyphs]);
   const exportPackage = async () => {
     if (exportBusy) return;
+    try {
+      const report = assertFontExportable(project);
+      if (report.warnings.length && !window.confirm(`Есть предупреждения качества (${report.warnings.length}), включая незаполненные символы. Продолжить сборку ZIP?`)) return;
+    } catch (error) { setMessage(error.message); setQualityOpen(true); return; }
     setExportBusy(true);
     setMessage('Подготавливаем пакет Regular: создаём шрифт и файлы архива…');
     try {
@@ -208,7 +212,7 @@ export default function App() {
     } catch (error) { setMessage(`Не удалось вставить символ: ${error.message}`); }
   };
 
-  const exportFont = style => { try { const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); } };
+  const exportFont = style => { try { const report = assertFontExportable(project); if (report.warnings.length && !window.confirm(`Есть предупреждения качества (${report.warnings.length}), включая незаполненные символы. Продолжить экспорт TTF?`)) return; const font = buildFont(project, style); downloadBlob(new Blob([font.toArrayBuffer()], { type: 'font/ttf' }), `${safeFilename(project.familyName)}-${style.toLowerCase().replace(/\\s+/g, '-')}.ttf`); setMessage(`TTF ${style} скачан. Проверьте отдельными font QA-инструментами перед распространением.`); } catch (error) { setMessage(`Не удалось создать TTF: ${error.message}`); setQualityOpen(true); } };
   const exportProject = () => downloadBlob(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${safeFilename(project.familyName)}-source.json`);
   const importProject = async event => {
     const file = event.target.files?.[0];
