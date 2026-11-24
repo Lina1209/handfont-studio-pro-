@@ -6,7 +6,7 @@ import { createProjectBackup, parseProjectBackup } from '../lib/projectBackup.js
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
   MAX_LIBRARY_ASSET_BYTES, MAX_LIBRARY_UPLOAD_TOTAL_BYTES,
-  removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject, updateLibraryProject
+  removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryAssets, saveLibraryProject, updateLibraryProject
 } from '../lib/library.js';
 
 function downloadBlob(blob, filename) {
@@ -60,9 +60,9 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
         const fallbackMime = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }[ext];
         prepared.push({ file, mime: fontMime || file.type || fallbackMime });
       }
-      for (const item of prepared) {
-        await saveLibraryAsset({ name: item.file.name, type: item.mime, blob: item.file, source: 'uploaded' });
-      }
+      await saveLibraryAssets(prepared.map(item => ({
+        name: item.file.name, type: item.mime, blob: item.file, source: 'uploaded'
+      })));
       await refresh(); setNote(`Добавлено файлов: ${files.length}. Оригинальные бинарные данные сохранены без перекодирования.`);
     } catch (error) { setNote(error.message); } finally { setBusy(false); event.target.value = ''; }
   };
