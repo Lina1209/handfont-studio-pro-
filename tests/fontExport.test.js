@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES } from '../lib/worksheet.js';
+import { SHEET_PAGES, worksheetPageSvg } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -133,6 +133,25 @@ test('worksheet generator contains seven printable pages with no duplicated symb
   assert.equal(new Set(allChars).size, allChars.length);
 });
 
+
+test('worksheet keeps the exact seven-page symbol order and printable cell geometry', () => {
+  const expectedPages = [
+    [...'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦ'],
+    [...'ЧШЩЪЫЬЭЮЯабвгдеёжзийклмн'],
+    [...'опрстуфхцчшщъыьэюяABCDEF'],
+    [...'GHIJKLMNOPQRSTUVWXYZabcd'],
+    [...'efghijklmnopqrstuvwx yz01'.replace(' ', '')],
+    [...'23456789.,;:!?—–-()[]«»"'],
+    ['\\\\', "'", '@', '#', '&', '/', '№', '%', '+', '=']
+  ];
+  assert.deepEqual(SHEET_PAGES, expectedPages);
+  for (let pageIndex = 0; pageIndex < SHEET_PAGES.length; pageIndex++) {
+    const svg = worksheetPageSvg(SHEET_PAGES[pageIndex], pageIndex + 1, SHEET_PAGES.length);
+    assert.equal((svg.match(/class="cell"/g) || []).length, SHEET_PAGES[pageIndex].length);
+    assert.equal((svg.match(/fill="#111"/g) || []).length, 8, 'four L-shaped corner marks must remain intact');
+    assert.match(svg, new RegExp('Страница ' + (pageIndex + 1) + ' из 7'));
+  }
+});
 
 test('createZip rejects NUL bytes in entry names', () => {
   const invalidName = `bad${String.fromCharCode(0)}name.txt`;
