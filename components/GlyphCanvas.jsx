@@ -109,5 +109,13 @@ export default function GlyphCanvas({ glyph, penWidth, penColor = '#f2eee7', era
     onCommit(stroke.tool === 'eraser' ? applyEraserToStrokes(glyph.strokes || [], stroke, stroke.mode) : [...(glyph.strokes || []), stroke]);
     setRedraw(value => value + 1);
   };
-  return <div className={`canvas-wrap ${toolMode === 'selection' ? 'selection-mode' : toolMode === 'eraser' ? 'eraser-mode' : 'pen-mode'}`}><canvas ref={canvasRef} onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish} style={{ touchAction: 'none' }} aria-label="Поле рисования символа" /></div>;
+  const cancel = event => {
+    if (activePointerId.current !== event.pointerId) return;
+    // pointercancel отменяет весь незавершённый жест: и штрих, и рамку выделения.
+    activePointerId.current = null;
+    activeStroke.current = null;
+    selection.current = null;
+    setRedraw(value => value + 1);
+  };
+  return <div className={`canvas-wrap ${toolMode === 'selection' ? 'selection-mode' : toolMode === 'eraser' ? 'eraser-mode' : 'pen-mode'}`}><canvas ref={canvasRef} onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} style={{ touchAction: 'none' }} aria-label="Поле рисования символа" /></div>;
 }
