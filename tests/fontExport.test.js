@@ -11,6 +11,7 @@ import { normalizeImportedProject } from '../lib/projectImport.js';
 import { validateFontAsset } from '../lib/fontFile.js';
 import { crc32 } from '../lib/checksum.js';
 import { importLibraryBackup } from '../lib/library.js';
+import { assertFontExportable } from '../lib/quality.js';
 
 
 const opentype = opentypeModule.default ?? opentypeModule;
@@ -443,4 +444,23 @@ test('single-project restore rejects wrong format and damaged project data', asy
     format: 'handfont-studio-project-backup', version: 1,
     name: 'Damaged', project: { familyName: 'Bad', glyphs: { 65: { strokes: [null], outlines: [] } } }
   }), /Штрих .* повреждён/);
+});
+
+
+test('font export gate blocks projects without any drawn glyphs', () => {
+  assert.throws(() => assertFontExportable(defaultProject()), /Экспорт остановлен: исправьте ошибки проверки шрифта/);
+});
+
+test('font export gate blocks invalid drawn glyph geometry', () => {
+  const project = defaultProject();
+  project.glyphs[65] = { unicode: 65, advanceWidth: 600, strokes: [{ width: 70, points: [{ x: NaN, y: 0 }, { x: 10, y: 10 }] }], outlines: [] };
+  assert.throws(() => assertFontExportable(project), /некорректные координаты/);
+});
+
+test('font export gate allows a valid project while preserving coverage warnings', () => {
+  const project = defaultProject();
+  project.glyphs[65] = { unicode: 65, advanceWidth: 600, strokes: [{ width: 70, points: [{ x: 20, y: 0 }, { x: 40, y: 100 }] }], outlines: [] };
+  const result = assertFontExportable(project);
+  assert.equal(result.errors.length, 0);
+  assert.ok(result.warnings.length > 0);
 });
