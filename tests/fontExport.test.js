@@ -10,7 +10,7 @@ import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
 import { validateFontAsset } from '../lib/fontFile.js';
 import { crc32 } from '../lib/checksum.js';
-import { importLibraryBackup } from '../lib/library.js';
+import { importLibraryBackup, saveLibraryAssets, MAX_LIBRARY_ASSET_BYTES } from '../lib/library.js';
 
 
 const opentype = opentypeModule.default ?? opentypeModule;
@@ -443,4 +443,14 @@ test('single-project restore rejects wrong format and damaged project data', asy
     format: 'handfont-studio-project-backup', version: 1,
     name: 'Damaged', project: { familyName: 'Bad', glyphs: { 65: { strokes: [null], outlines: [] } } }
   }), /Штрих .* повреждён/);
+});
+
+
+test('atomic library upload rejects an oversized batch item before opening IndexedDB', async () => {
+  const oversized = { name: 'too-large.ttf', type: 'font/ttf', blob: { size: MAX_LIBRARY_ASSET_BYTES + 1 } };
+  await assert.rejects(() => saveLibraryAssets([oversized]), /максимальный размер одного файла библиотеки — 50 МБ/);
+});
+
+test('atomic library upload accepts an empty batch as a no-op', async () => {
+  assert.deepEqual(await saveLibraryAssets([]), []);
 });
