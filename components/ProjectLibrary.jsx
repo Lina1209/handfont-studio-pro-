@@ -5,6 +5,7 @@ import { validateFontAsset } from '../lib/fontFile.js';
 import { createProjectBackup, parseProjectBackup } from '../lib/projectBackup.js';
 import {
   exportLibraryBackup, importLibraryBackup, listLibraryAssets, listLibraryProjects,
+  MAX_LIBRARY_ASSET_BYTES, MAX_LIBRARY_UPLOAD_TOTAL_BYTES,
   removeLibraryAsset, removeLibraryProject, saveLibraryAsset, saveLibraryProject, updateLibraryProject
 } from '../lib/library.js';
 
@@ -48,6 +49,8 @@ export default function ProjectLibrary({ project, onLoadProject, onStatus }) {
   const uploadAssets = async event => {
     const files = [...(event.target.files || [])];
     try {
+      if (files.some(file => file.size > MAX_LIBRARY_ASSET_BYTES)) throw new Error('Один из файлов превышает лимит 50 МБ.');
+      if (files.reduce((sum, file) => sum + file.size, 0) > MAX_LIBRARY_UPLOAD_TOTAL_BYTES) throw new Error('Общий объём выбранных файлов превышает лимит 100 МБ за одну загрузку.');
       setBusy(true);
       const prepared = [];
       for (const file of files) {
