@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES } from '../lib/worksheet.js';
+import { SHEET_PAGES, worksheetPageSvg, traceMask } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -133,6 +133,70 @@ test('worksheet generator contains seven printable pages with no duplicated symb
   assert.equal(new Set(allChars).size, allChars.length);
 });
 
+
+test('worksheet keeps the exact seven-page symbol order and printable cell geometry', () => {
+  const expectedPages = [
+    [...'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦ'],
+    [...'ЧШЩЪЫЬЭЮЯабвгдеёжзийклмн'],
+    [...'опрстуфхцчшщъыьэюяABCDEF'],
+    [...'GHIJKLMNOPQRSTUVWXYZabcd'],
+    [...'efghijklmnopqrstuvwx yz01'.replace(' ', '')],
+    [...'23456789.,;:!?—–-()[]«»"'],
+    ['\\', "'", '@', '#', '&', '/', '№', '%', '+', '=']
+  ];
+  assert.deepEqual(SHEET_PAGES, expectedPages);
+  for (let pageIndex = 0; pageIndex < SHEET_PAGES.length; pageIndex++) {
+    const svg = worksheetPageSvg(SHEET_PAGES[pageIndex], pageIndex + 1, SHEET_PAGES.length);
+    assert.equal((svg.match(/class="cell"/g) || []).length, SHEET_PAGES[pageIndex].length);
+    assert.equal((svg.match(/fill="#111"/g) || []).length, 8, 'four L-shaped corner marks must remain intact');
+    assert.match(svg, new RegExp('Страница ' + (pageIndex + 1) + ' из 7'));
+  }
+});
+
+test('worksheet contour tracer preserves a hole and a detached dot', () => {
+  const width = 11, height = 11;
+  const mask = new Uint8Array(width * height);
+  for (let y = 2; y <= 8; y++) for (let x = 2; x <= 8; x++) mask[y * width + x] = 1;
+  for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) mask[y * width + x] = 0;
+  mask[1 * width + 1] = 1;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 3, 'outer contour, inner counter and separate dot must remain distinct');
+  const areas = loops.map(points => Math.abs(points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0) / 2)).sort((a, b) => a - b);
+  assert.ok(areas[0] > 0, 'the detached dot must have a non-empty contour');
+  assert.ok(areas[1] > areas[0], 'the inner contour must be larger than the detached dot');
+  assert.ok(areas[2] > areas[1], 'the outer contour must enclose the inner counter');
+});
+
+test('worksheet contour tracer preserves tiny dots, thin bars and diagonal-touching components', () => {
+  const makeMask = (width, height, pixels) => {
+    const mask = new Uint8Array(width * height);
+    for (const [x, y] of pixels) mask[y * width + x] = 1;
+    return mask;
+  };
+  const dot = traceMask(makeMask(5, 5, [[2, 2]]), 5, 5);
+  assert.equal(dot.length, 1, 'a one-pixel dot must produce one closed contour');
+  assert.ok(dot[0].length >= 4);
+
+  const thinBar = traceMask(makeMask(7, 5, [[2, 2], [3, 2], [4, 2]]), 7, 5);
+  assert.equal(thinBar.length, 1, 'a thin horizontal stroke must remain one contour');
+
+  const diagonal = traceMask(makeMask(4, 4, [[1, 1], [2, 2]]), 4, 4);
+  assert.equal(diagonal.length, 2, 'diagonal-only contact must not merge two distinct outline loops');
+  assert.ok(diagonal.every(loop => loop.length >= 4));
+});
+
+test('worksheet contour tracer preserves a nested island inside a counter', () => {
+  const width = 13, height = 13;
+  const mask = new Uint8Array(width * height);
+  for (let y = 1; y <= 11; y++) for (let x = 1; x <= 11; x++) mask[y * width + x] = 1;
+  for (let y = 3; y <= 9; y++) for (let x = 3; x <= 9; x++) mask[y * width + x] = 0;
+  for (let y = 5; y <= 7; y++) for (let x = 5; x <= 7; x++) mask[y * width + x] = 1;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 3, 'outer contour, counter and nested island must all remain');
+});
 
 test('createZip rejects NUL bytes in entry names', () => {
   const invalidName = `bad${String.fromCharCode(0)}name.txt`;
