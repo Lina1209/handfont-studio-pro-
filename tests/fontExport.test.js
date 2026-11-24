@@ -4,7 +4,7 @@ import * as opentypeModule from 'opentype.js';
 import { buildFont } from '../lib/font.js';
 import { ttfToWoff } from '../lib/formats.js';
 import { createZip } from '../lib/publishing.js';
-import { SHEET_PAGES, worksheetPageSvg } from '../lib/worksheet.js';
+import { SHEET_PAGES, worksheetPageSvg, traceMask } from '../lib/worksheet.js';
 import { BACKUP_STORAGE_KEY, RECOVERY_STORAGE_KEY, STORAGE_KEY, defaultProject, loadProject, saveProjectSnapshot, updateProjectMetadata } from '../lib/project.js';
 import { resolveFontMetadata } from '../lib/metadata.js';
 import { normalizeImportedProject } from '../lib/projectImport.js';
@@ -151,6 +151,23 @@ test('worksheet keeps the exact seven-page symbol order and printable cell geome
     assert.equal((svg.match(/fill="#111"/g) || []).length, 8, 'four L-shaped corner marks must remain intact');
     assert.match(svg, new RegExp('Страница ' + (pageIndex + 1) + ' из 7'));
   }
+});
+
+test('worksheet contour tracer preserves a hole and a detached dot', () => {
+  const width = 11, height = 11;
+  const mask = new Uint8Array(width * height);
+  for (let y = 2; y <= 8; y++) for (let x = 2; x <= 8; x++) mask[y * width + x] = 1;
+  for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) mask[y * width + x] = 0;
+  mask[1 * width + 1] = 1;
+  const loops = traceMask(mask, width, height);
+  assert.equal(loops.length, 3, 'outer contour, inner counter and separate dot must remain distinct');
+  const areas = loops.map(points => Math.abs(points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0) / 2)).sort((a, b) => a - b);
+  assert.ok(areas[0] > 0, 'the detached dot must have a non-empty contour');
+  assert.ok(areas[1] > areas[0], 'the inner contour must be larger than the detached dot');
+  assert.ok(areas[2] > areas[1], 'the outer contour must enclose the inner counter');
 });
 
 test('createZip rejects NUL bytes in entry names', () => {
